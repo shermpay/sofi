@@ -12,7 +12,7 @@
 #define SAMPLE_RATE 44100
 #define FRAMES_PER_BUFFER paFramesPerBufferUnspecified
 
-#define SAMPLE_SILENCE 128
+#define SAMPLE_SILENCE 0.f
 
 #define BAUD 10
 #define ZERO_FREQ 1200.f
@@ -39,7 +39,7 @@ static int receive_callback(const void *input_buffer, void *output_buffer,
 		PaUtil_GetRingBufferWriteAvailable(data->ring_buffer);
 	ring_buffer_size_t elements_to_write =
 		fmin(elements_writeable, (ring_buffer_size_t)frames_per_buffer);
-	const int *in = (const int *) input_buffer;
+	const float *in = (const float *) input_buffer;
 
 	(void)output_buffer;
 	(void)frames_per_buffer;
@@ -48,7 +48,7 @@ static int receive_callback(const void *input_buffer, void *output_buffer,
 
 	unsigned long i;
 	if (in == NULL) {
-		int silence = SAMPLE_SILENCE;
+		float silence = SAMPLE_SILENCE;
 		for (i = 0; i < frames_per_buffer; i++) {
 			PaUtil_WriteRingBuffer(data->ring_buffer, &silence, 1);
 		}
@@ -63,7 +63,6 @@ int main(void)
 {
 	PaUtilRingBuffer ring_buffer;
 	ring_buffer_size_t ring_ret;
-	/* (void) ring_ret; */
 	void *ring_buffer_ptr;
 	PaStream *stream;
 	PaError err;
@@ -76,13 +75,13 @@ int main(void)
 
 	int status = EXIT_SUCCESS;
 	
-	ring_buffer_ptr = malloc(RING_BUFFER_SIZE);
+	ring_buffer_ptr = malloc(RING_BUFFER_SIZE * sizeof(float));
 	if (!ring_buffer_ptr) {
 		perror("malloc");
 		return EXIT_FAILURE;
 	}
 
-	PaUtil_InitializeRingBuffer(&ring_buffer, 1, RING_BUFFER_SIZE,
+	PaUtil_InitializeRingBuffer(&ring_buffer, sizeof(float), RING_BUFFER_SIZE,
 				    ring_buffer_ptr);
 
 	err = Pa_Initialize();
@@ -110,11 +109,11 @@ int main(void)
 		goto close_stream;
 	}
 
-	int x = 0;
+	float x = 0.f;
 	while (true) {
 		ring_ret = PaUtil_ReadRingBuffer(data.ring_buffer, &x, 1);
 		if (ring_ret > 0) {
-			printf("%d\n", x);
+			printf("%f\n", x);
 		}
 		Pa_Sleep(1000);
 	}
