@@ -1,9 +1,9 @@
-ALL_CFLAGS := -Wall -Wextra -Werror -std=c99 -g $(CFLAGS)
+ALL_CFLAGS := -Wall -Wextra -Werror -std=c99 -D_XOPEN_SOURCE=700 -g $(CFLAGS)
 
 .PHONY: all
 all: sender
 
-sender: sender.o
+sender: sender.o pa_ringbuffer.o
 	$(CC) $(ALL_CFLAGS) -o $@ $^ -lm -lportaudio
 
 %.o: %.c
