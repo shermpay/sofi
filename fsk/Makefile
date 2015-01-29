@@ -3,6 +3,9 @@ ALL_CFLAGS := -Wall -Wextra -Werror -std=c99 -D_XOPEN_SOURCE=700 -g $(CFLAGS)
 .PHONY: all
 all: sender
 
+receiver: receiver.o pa_ringbuffer.o
+	$(CC) $(ALL_CFLAGS) -o $@ $^ -lm -lportaudio
+
 sender: sender.o pa_ringbuffer.o
 	$(CC) $(ALL_CFLAGS) -o $@ $^ -lm -lportaudio
 
@@ -11,4 +14,4 @@ sender: sender.o pa_ringbuffer.o
 
 .PHONY: clean
 clean:
-	rm -f sender sender.o
+	rm -f sender sender.o receiver receiver.o pa_ringbuffer.o
