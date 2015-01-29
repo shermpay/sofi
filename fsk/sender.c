@@ -5,7 +5,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "pa_ringbuffer.h"
 
 #define RING_BUFFER_SIZE (1 << 12)
 
@@ -15,9 +14,12 @@
 #define BAUD 10
 #define ZERO_FREQ 1200.f
 #define ONE_FREQ 2200.f
+#define ZERO_AMP 0.5f
+#define ONE_AMP 1.f
 
 struct callback_data {
-	PaUtilRingBuffer *ring_buffer;
+	char *data;
+	size_t len;
 	int phase;
 	int frame;
 	int bit_index;
@@ -33,7 +35,7 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 	float *out = output_buffer;
 	struct callback_data *data = arg;
 	float frequency;
-	ring_buffer_size_t ret;
+	float amp;
 	unsigned long i;
 
 	(void)input_buffer;
@@ -41,57 +43,43 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 	(void)status_flags;
 
 	for (i = 0; i < frames_per_buffer; i++) {
-		if (data->frame >= SAMPLE_RATE / BAUD) {
-			if (data->bit_index >= 8) {
-				ret = PaUtil_ReadRingBuffer(data->ring_buffer,
-							    &data->byte, 1);
-				if (ret == 0)
+		if (++data->frame >= SAMPLE_RATE / BAUD) {
+			if (++data->bit_index >= 8) {
+				if (data->len == 0)
 					break;
+				data->byte = *data->data++;
+				data->len--;
 				data->bit_index = 0;
 			}
-			data->frame = 0;
 			data->bit = data->byte & (1 << data->bit_index);
-			data->bit_index++;
+			data->frame = 0;
 		}
-		data->frame++;
 
 		frequency = data->bit ? ONE_FREQ : ZERO_FREQ;
+		amp = data->bit ? ONE_AMP : ZERO_AMP;
 
-		out[i] = sinf(2 * M_PI * frequency * data->phase / SAMPLE_RATE);
+		out[i] = amp * sinf(2 * M_PI * frequency * data->phase / SAMPLE_RATE);
 		data->phase++;
 	}
 
-	for (; i < frames_per_buffer; i++)
-		out[i] = 0.f;
+	if (i < frames_per_buffer) {
+		for (; i < frames_per_buffer; i++)
+			out[i] = 0.f;
+		return paComplete;
+	}
 
 	return paContinue;
 }
 
 int main(void)
 {
-	PaUtilRingBuffer ring_buffer;
-	ring_buffer_size_t ring_ret;
-	void *ring_buffer_ptr;
 	PaStream *stream;
 	PaError err;
-	struct callback_data data = {
-		.ring_buffer = &ring_buffer,
-		.frame = SAMPLE_RATE / BAUD,
-		.bit_index = 8,
-	};
+	struct callback_data data;
 	char *line = NULL;
 	size_t n = 0;
 	ssize_t ret;
 	int status = EXIT_SUCCESS;
-
-	ring_buffer_ptr = malloc(RING_BUFFER_SIZE);
-	if (!ring_buffer_ptr) {
-		perror("malloc");
-		return EXIT_FAILURE;
-	}
-
-	PaUtil_InitializeRingBuffer(&ring_buffer, 1, RING_BUFFER_SIZE,
-				    ring_buffer_ptr);
 
 	err = Pa_Initialize();
 	if (err != paNoError) {
@@ -110,31 +98,43 @@ int main(void)
 		goto terminate;
 	}
 
-	err = Pa_StartStream(stream);
-	if (err != paNoError) {
-		fprintf(stderr, "PortAudio: starting stream failed: %s\n",
-			Pa_GetErrorText(err));
-		status = EXIT_FAILURE;
-		goto close_stream;
-	}
-
 	while ((ret = getline(&line, &n, stdin)) > 0) {
-		ring_ret = PaUtil_WriteRingBuffer(&ring_buffer, line,
-						  (ring_buffer_size_t)ret);
-		assert(ring_ret == (ring_buffer_size_t)ret);
+		data.data = line;
+		data.len = ret;
+		data.phase = 0;
+		data.frame = SAMPLE_RATE / BAUD - 1;
+		data.bit_index = 7;
+
+		err = Pa_StartStream(stream);
+		if (err != paNoError) {
+			fprintf(stderr, "PortAudio: starting stream failed: %s\n",
+				Pa_GetErrorText(err));
+			status = EXIT_FAILURE;
+			goto close_stream;
+		}
+
+		while ((err = Pa_IsStreamActive(stream)) == 1)
+			Pa_Sleep(100); /* XXX: gross. */
+
+		if (err != paNoError) {
+			fprintf(stderr, "PortAudio: checking stream failed: %s\n",
+				Pa_GetErrorText(err));
+			status = EXIT_FAILURE;
+		}
+
+
+		err = Pa_StopStream(stream);
+		if (err != paNoError) {
+			fprintf(stderr, "PortAudio: stopping stream failed: %s\n",
+				Pa_GetErrorText(err));
+			status = EXIT_FAILURE;
+			goto close_stream;
+		}
 	}
 
 	if (ret == -1 && !feof(stdin)) {
 		perror("getline");
 		status = EXIT_FAILURE;
-	}
-
-	err = Pa_StopStream(stream);
-	if (err != paNoError) {
-		fprintf(stderr, "PortAudio: stopping stream failed: %s\n",
-			Pa_GetErrorText(err));
-		status = EXIT_FAILURE;
-		goto close_stream;
 	}
 
 close_stream:
@@ -155,6 +155,5 @@ terminate:
 
 out:
 	free(line);
-	free(ring_buffer_ptr);
 	return status;
 }
