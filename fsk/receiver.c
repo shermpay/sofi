@@ -38,6 +38,24 @@ static void signal_handler(int signum)
 	signal_received = signum;
 }
 
+/* Convert window to frame to time in seconds. */
+static inline float window_to_seconds(int window)
+{
+	return (float)window * (float)FFT_WINDOW / (float)SAMPLE_RATE;
+}
+
+/* Convert FFT bin index to frequency in Hz. */
+static inline float bin_to_frequency(int bin)
+{
+	return (float)bin * (float)SAMPLE_RATE / (float)FFT_WINDOW;
+}
+
+/* Convert FFT output to dBFS. */
+static inline float fft_to_dbfs(float complex fft)
+{
+	return 20.f * logf(2.f * cabsf(fft) / (float)FFT_WINDOW);
+}
+
 void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 		   float *fft_in, float complex *fft_out)
 {
@@ -48,21 +66,21 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 	while (!(signum = signal_received)) {
 		float time, frequency, dbfs;
 
-		if (PaUtil_GetRingBufferReadAvailable(ring_buffer) < FFT_WINDOW)
+		if (PaUtil_GetRingBufferReadAvailable(ring_buffer) < FFT_WINDOW / 2)
 			continue;
 
-		ring_ret = PaUtil_ReadRingBuffer(ring_buffer, fft_in, FFT_WINDOW);
-		assert(ring_ret == FFT_WINDOW);
+		memmove(fft_in, fft_in + FFT_WINDOW / 2,
+			(FFT_WINDOW / 2) * sizeof(float));
+		ring_ret = PaUtil_ReadRingBuffer(ring_buffer, fft_in + FFT_WINDOW / 2,
+						 FFT_WINDOW / 2);
+		assert(ring_ret == FFT_WINDOW / 2);
 
 		fftwf_execute(fft_plan);
 
-		/* Convert window to frame to time in seconds. */
-		time = (float)window * (float)FFT_WINDOW / (float)SAMPLE_RATE;
+		time = window_to_seconds(window);
 		for (int i = 0; i < FFT_WINDOW / 2 + 1; i++) {
-			/* Convert FFT bin to frequency in Hz. */
-			frequency = (float)i * (float)SAMPLE_RATE / (float)FFT_WINDOW;
-			/* Convert magnitude to dBFS. */
-			dbfs = 20.f * logf(2.f * cabsf(fft_out[i]) / (float)FFT_WINDOW);
+			frequency = bin_to_frequency(i);
+			dbfs = fft_to_dbfs(fft_out[i]);
 			printf("%f %f %f\n", time, frequency, dbfs);
 		}
 		printf("\n");
@@ -113,6 +131,7 @@ int main(void)
 		status = EXIT_FAILURE;
 		goto out;
 	}
+	memset(fft_in, 0.f, FFT_WINDOW * sizeof(float));
 	fft_out = fftwf_alloc_complex(FFT_WINDOW / 2 + 1);
 	if (!fft_out) {
 		fprintf(stderr, "could not allocate FFT output\n");
