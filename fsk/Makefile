@@ -7,7 +7,7 @@ sender: sender.o
 	$(CC) $(ALL_CFLAGS) -o $@ $^ -lm -lportaudio
 
 receiver: receiver.o pa_ringbuffer.o
-	$(CC) $(ALL_CFLAGS) -o $@ $^ -lm -lportaudio
+	$(CC) $(ALL_CFLAGS) -o $@ $^ -lm -lportaudio -lfftw3f
 
 %.o: %.c
 	$(CC) $(ALL_CFLAGS) -o $@ -c $<

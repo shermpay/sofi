@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <complex.h>
 #include <math.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -6,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "fftw3.h"
 #include "portaudio.h"
 #include "pa_ringbuffer.h"
 
@@ -13,6 +15,8 @@
 
 #define SAMPLE_RATE 44100
 #define FRAMES_PER_BUFFER paFramesPerBufferUnspecified
+
+#define FFT_WINDOW 1024
 
 static int receive_callback(const void *input_buffer, void *output_buffer,
 			    unsigned long frames_per_buffer,
@@ -34,16 +38,36 @@ static void signal_handler(int signum)
 	signal_received = signum;
 }
 
-void receiver_loop(PaUtilRingBuffer *ring_buffer)
+void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
+		   float *fft_in, float complex *fft_out)
 {
 	ring_buffer_size_t ring_ret;
-	float x;
 	int signum;
+	int window = 0;
 
 	while (!(signum = signal_received)) {
-		ring_ret = PaUtil_ReadRingBuffer(ring_buffer, &x, 1);
-		if (ring_ret > 0)
-			printf("%f\n", x);
+		float time, frequency, dbfs;
+
+		if (PaUtil_GetRingBufferReadAvailable(ring_buffer) < FFT_WINDOW)
+			continue;
+
+		ring_ret = PaUtil_ReadRingBuffer(ring_buffer, fft_in, FFT_WINDOW);
+		assert(ring_ret == FFT_WINDOW);
+
+		fftwf_execute(fft_plan);
+
+		/* Convert window to frame to time in seconds. */
+		time = (float)window * (float)FFT_WINDOW / (float)SAMPLE_RATE;
+		for (int i = 0; i < FFT_WINDOW / 2 + 1; i++) {
+			/* Convert FFT bin to frequency in Hz. */
+			frequency = (float)i * (float)SAMPLE_RATE / (float)FFT_WINDOW;
+			/* Convert magnitude to dBFS. */
+			dbfs = 20.f * logf(2.f * cabsf(fft_out[i]) / (float)FFT_WINDOW);
+			printf("%f %f %f\n", time, frequency, dbfs);
+		}
+		printf("\n");
+
+		window++;
 	}
 
 	fprintf(stderr, "got %s; exiting\n", strsignal(signum));
@@ -51,13 +75,20 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer)
 
 int main(void)
 {
+	fftwf_plan fft_plan = NULL;
+	float *fft_in = NULL;
+	float complex *fft_out = NULL;
+
 	PaUtilRingBuffer ring_buffer;
 	void *ring_buffer_ptr;
+
 	PaStream *stream;
 	PaError err;
+
 	int status = EXIT_SUCCESS;
 	struct sigaction sa;
 
+	/* Handle signals. */
 	sa.sa_handler = signal_handler;
 	sa.sa_flags = SA_RESTART;
 	sigemptyset(&sa.sa_mask);
@@ -66,21 +97,42 @@ int main(void)
 		return EXIT_FAILURE;
 	}
 
+	/* Initialize ring buffer. */
 	ring_buffer_ptr = malloc(RING_BUFFER_SIZE * sizeof(float));
 	if (!ring_buffer_ptr) {
 		perror("malloc");
 		return EXIT_FAILURE;
 	}
-
 	PaUtil_InitializeRingBuffer(&ring_buffer, sizeof(float), RING_BUFFER_SIZE,
 				    ring_buffer_ptr);
 
+	/* Initialize FFTW. */
+	fft_in = fftwf_alloc_real(FFT_WINDOW);
+	if (!fft_in) {
+		fprintf(stderr, "could not allocate FFT input\n");
+		status = EXIT_FAILURE;
+		goto out;
+	}
+	fft_out = fftwf_alloc_complex(FFT_WINDOW / 2 + 1);
+	if (!fft_out) {
+		fprintf(stderr, "could not allocate FFT output\n");
+		status = EXIT_FAILURE;
+		goto fftw_cleanup;
+	}
+	fft_plan = fftwf_plan_dft_r2c_1d(FFT_WINDOW, fft_in, fft_out, 0);
+	if (!fft_plan) {
+		fprintf(stderr, "could not create FFT plan\n");
+		status = EXIT_FAILURE;
+		goto fftw_cleanup;
+	}
+
+	/* Initialize PortAudio. */
 	err = Pa_Initialize();
 	if (err != paNoError) {
 		fprintf(stderr, "PortAudio: initialization failed: %s\n",
 			Pa_GetErrorText(err));
 		status = EXIT_FAILURE;
-		goto out;
+		goto fftw_cleanup;
 	}
 
 	err = Pa_OpenDefaultStream(&stream, 1, 0, paFloat32, SAMPLE_RATE,
@@ -93,6 +145,7 @@ int main(void)
 		goto terminate;
 	}
 
+	/* Run the receiver. */
 	err = Pa_StartStream(stream);
 	if (err != paNoError) {
 		fprintf(stderr, "PortAudio: starting stream failed: %s\n",
@@ -101,7 +154,7 @@ int main(void)
 		goto close_stream;
 	}
 
-	receiver_loop(&ring_buffer);
+	receiver_loop(&ring_buffer, fft_plan, fft_in, fft_out);
 
 	err = Pa_StopStream(stream);
 	if (err != paNoError) {
@@ -111,6 +164,7 @@ int main(void)
 		goto close_stream;
 	}
 
+	/* Cleanup. */
 close_stream:
 	err = Pa_CloseStream(stream);
 	if (err != paNoError) {
@@ -126,6 +180,13 @@ terminate:
 			Pa_GetErrorText(err));
 		status = EXIT_FAILURE;
 	}
+
+fftw_cleanup:
+	if (fft_plan)
+		fftwf_destroy_plan(fft_plan);
+	fftwf_free(fft_in);
+	fftwf_free(fft_out);
+	fftwf_cleanup();
 
 out:
 	free(ring_buffer_ptr);
