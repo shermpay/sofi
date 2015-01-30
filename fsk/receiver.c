@@ -70,14 +70,15 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 	while (!(signum = signal_received)) {
 		float time, frequency, dbfs;
 
-		if (PaUtil_GetRingBufferReadAvailable(ring_buffer) < FFT_WINDOW / 2)
+		if (PaUtil_GetRingBufferReadAvailable(ring_buffer) < SLIDE_WINDOW)
 			continue;
 
-		memmove(fft_in, fft_in + FFT_WINDOW / 2,
-			(FFT_WINDOW / 2) * sizeof(float));
-		ring_ret = PaUtil_ReadRingBuffer(ring_buffer, fft_in + FFT_WINDOW / 2,
-						 FFT_WINDOW / 2);
-		assert(ring_ret == FFT_WINDOW / 2);
+		memmove(fft_in, fft_in + SLIDE_WINDOW,
+			(FFT_WINDOW - SLIDE_WINDOW) * sizeof(float));
+		ring_ret = PaUtil_ReadRingBuffer(ring_buffer,
+						 fft_in + (FFT_WINDOW - SLIDE_WINDOW),
+						 SLIDE_WINDOW);
+		assert(ring_ret == SLIDE_WINDOW);
 
 		fftwf_execute(fft_plan);
 
