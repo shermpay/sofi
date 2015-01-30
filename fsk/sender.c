@@ -15,7 +15,7 @@
 #define BAUD 10
 #define ZERO_FREQ 1200.f
 #define ONE_FREQ 2200.f
-#define ZERO_AMP 0.5f
+#define ZERO_AMP 1.f
 #define ONE_AMP 1.f
 
 struct callback_data {
