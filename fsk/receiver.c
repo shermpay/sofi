@@ -1,11 +1,13 @@
 #include <assert.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <stdbool.h>
 #include <math.h>
+#include <signal.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
+#include "portaudio.h"
 #include "pa_ringbuffer.h"
-#include <portaudio.h>
 
 #define RING_BUFFER_SIZE (1 << 12)
 
@@ -18,7 +20,6 @@ static int receive_callback(const void *input_buffer, void *output_buffer,
 			    PaStreamCallbackFlags status_flags, void *arg)
 {
 	(void)output_buffer;
-	(void)frames_per_buffer;
 	(void)time_info;
 	(void)status_flags;
 
@@ -27,14 +28,43 @@ static int receive_callback(const void *input_buffer, void *output_buffer,
         return paContinue;
 }
 
+static sig_atomic_t signal_received;
+static void signal_handler(int signum)
+{
+	signal_received = signum;
+}
+
+void receiver_loop(PaUtilRingBuffer *ring_buffer)
+{
+	ring_buffer_size_t ring_ret;
+	float x;
+	int signum;
+
+	while (!(signum = signal_received)) {
+		ring_ret = PaUtil_ReadRingBuffer(ring_buffer, &x, 1);
+		if (ring_ret > 0)
+			printf("%f\n", x);
+	}
+
+	fprintf(stderr, "got %s; exiting\n", strsignal(signum));
+}
+
 int main(void)
 {
 	PaUtilRingBuffer ring_buffer;
-	ring_buffer_size_t ring_ret;
 	void *ring_buffer_ptr;
 	PaStream *stream;
 	PaError err;
 	int status = EXIT_SUCCESS;
+	struct sigaction sa;
+
+	sa.sa_handler = signal_handler;
+	sa.sa_flags = SA_RESTART;
+	sigemptyset(&sa.sa_mask);
+	if (sigaction(SIGINT, &sa, NULL) == -1) {
+		perror("sigaction");
+		return EXIT_FAILURE;
+	}
 
 	ring_buffer_ptr = malloc(RING_BUFFER_SIZE * sizeof(float));
 	if (!ring_buffer_ptr) {
@@ -71,13 +101,7 @@ int main(void)
 		goto close_stream;
 	}
 
-	while (true) {
-		float x;
-
-		ring_ret = PaUtil_ReadRingBuffer(&ring_buffer, &x, 1);
-		if (ring_ret > 0)
-			printf("%f\n", x);
-	}
+	receiver_loop(&ring_buffer);
 
 	err = Pa_StopStream(stream);
 	if (err != paNoError) {

@@ -1,10 +1,11 @@
 #include <assert.h>
 #include <math.h>
-#include <portaudio.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "portaudio.h"
 
 #define RING_BUFFER_SIZE (1 << 12)
 
