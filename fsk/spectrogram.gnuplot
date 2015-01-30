@@ -1,5 +1,3 @@
-#!/usr/bin/env gnuplot
-
 filename="/tmp/fft.txt"
 
 reset

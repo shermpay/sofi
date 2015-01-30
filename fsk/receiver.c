@@ -16,7 +16,11 @@
 #define SAMPLE_RATE 44100
 #define FRAMES_PER_BUFFER paFramesPerBufferUnspecified
 
-#define FFT_WINDOW 1024
+#define FFT_WINDOW 256
+#define SLIDE_WINDOW (FFT_WINDOW / 4)
+
+#define ZERO_FREQ 2200.f
+#define ONE_FREQ 1200.f
 
 static int receive_callback(const void *input_buffer, void *output_buffer,
 			    unsigned long frames_per_buffer,
@@ -131,7 +135,7 @@ int main(void)
 		status = EXIT_FAILURE;
 		goto out;
 	}
-	memset(fft_in, 0.f, FFT_WINDOW * sizeof(float));
+	memset(fft_in, 0, FFT_WINDOW * sizeof(float));
 	fft_out = fftwf_alloc_complex(FFT_WINDOW / 2 + 1);
 	if (!fft_out) {
 		fprintf(stderr, "could not allocate FFT output\n");

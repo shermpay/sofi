@@ -13,15 +13,15 @@
 #define FRAMES_PER_BUFFER paFramesPerBufferUnspecified
 
 #define BAUD 10
-#define ZERO_FREQ 1200.f
-#define ONE_FREQ 2200.f
+#define ZERO_FREQ 2200.f
+#define ONE_FREQ 1200.f
 #define ZERO_AMP 1.f
 #define ONE_AMP 1.f
 
 struct callback_data {
 	char *data;
 	size_t len;
-	int phase;
+	float phase;
 	int frame;
 	int bit_index;
 	char byte;
@@ -59,8 +59,8 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 		frequency = data->bit ? ONE_FREQ : ZERO_FREQ;
 		amp = data->bit ? ONE_AMP : ZERO_AMP;
 
-		out[i] = amp * sinf(2 * M_PI * frequency * data->phase / SAMPLE_RATE);
-		data->phase++;
+		out[i] = amp * sinf(data->phase / SAMPLE_RATE);
+		data->phase += 2 * M_PI * frequency;
 	}
 
 	if (i < frames_per_buffer) {
@@ -102,7 +102,7 @@ int main(void)
 	while ((ret = getline(&line, &n, stdin)) > 0) {
 		data.data = line;
 		data.len = ret;
-		data.phase = 0;
+		data.phase = 0.f;
 		data.frame = SAMPLE_RATE / BAUD - 1;
 		data.bit_index = 7;
 
