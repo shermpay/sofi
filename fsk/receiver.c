@@ -10,28 +10,34 @@
 #include "fftw3.h"
 #include "portaudio.h"
 #include "pa_ringbuffer.h"
+#include "fsk.h"
 
 #define RING_BUFFER_SIZE (1 << 12)
 
 #define SAMPLE_RATE 44100
-#define FRAMES_PER_BUFFER paFramesPerBufferUnspecified
+#define FRAMES_PER_BUFFER 1024
 
-#define FFT_WINDOW 256
-#define SLIDE_WINDOW (FFT_WINDOW / 4)
+#define FFT_WINDOW 1024
+#define ACTUAL_WINDOW 256
+#define SLIDE_WINDOW (ACTUAL_WINDOW / 4)
 
-#define ZERO_FREQ 2200.f
-#define ONE_FREQ 1200.f
+#define DELTA_STEADY (1.f / (32.f * BAUD))
+#define DEMOD_WINDOW (1.f / (2.f * BAUD))
 
 static int receive_callback(const void *input_buffer, void *output_buffer,
 			    unsigned long frames_per_buffer,
 			    const PaStreamCallbackTimeInfo *time_info,
 			    PaStreamCallbackFlags status_flags, void *arg)
 {
+	ring_buffer_size_t ret;
 	(void)output_buffer;
 	(void)time_info;
 	(void)status_flags;
 
-	PaUtil_WriteRingBuffer(arg, input_buffer, frames_per_buffer);
+	assert((unsigned long)PaUtil_GetRingBufferWriteAvailable(arg) >= frames_per_buffer);
+
+	ret = PaUtil_WriteRingBuffer(arg, input_buffer, frames_per_buffer);
+	assert((unsigned long)ret == frames_per_buffer);
 
         return paContinue;
 }
@@ -45,7 +51,7 @@ static void signal_handler(int signum)
 /* Convert window to frame to time in seconds. */
 static inline float window_to_seconds(int window)
 {
-	return (float)window * (float)FFT_WINDOW / (float)SAMPLE_RATE;
+	return (float)window * (float)SLIDE_WINDOW / (float)SAMPLE_RATE;
 }
 
 /* Convert FFT bin index to frequency in Hz. */
@@ -54,10 +60,43 @@ static inline float bin_to_frequency(int bin)
 	return (float)bin * (float)SAMPLE_RATE / (float)FFT_WINDOW;
 }
 
+/* Convert frequency in Hz to FFT bin. */
+static inline int frequency_to_bin(float hz)
+{
+	return (int)(hz * (float)FFT_WINDOW / (float)SAMPLE_RATE + 0.5f);
+}
+
 /* Convert FFT output to dBFS. */
 static inline float fft_to_dbfs(float complex fft)
 {
 	return 20.f * logf(2.f * cabsf(fft) / (float)FFT_WINDOW);
+}
+
+enum state {
+	STATE_LISTENING,
+	STATE_NOISE_WAIT,
+	STATE_DEMOD_WAIT,
+	STATE_DEMOD_GATHER,
+};
+
+struct sig_counts {
+	int one;
+	int zero;
+	int none;
+};
+
+#define MOSTLY_THRESHOLD 0.50f
+
+static inline int calc_mostly(struct sig_counts *counts)
+{
+	int total = counts->one + counts->zero + counts->none;
+
+	if ((float)counts->one / (float)total >= MOSTLY_THRESHOLD)
+		return 1;
+	else if ((float)counts->zero / (float)total >= MOSTLY_THRESHOLD)
+		return 0;
+	else
+		return -1;
 }
 
 void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
@@ -66,34 +105,109 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 	ring_buffer_size_t ring_ret;
 	int signum;
 	int window = 0;
+	enum state state = STATE_LISTENING;
+	float t0;
+	float wait_until;
+	int prev = 0;
+	int n;
+	struct sig_counts counts;
 
 	while (!(signum = signal_received)) {
-		float time, frequency, dbfs;
+		float time;
+		float zero_dbfs, one_dbfs;
+		int val;
 
 		if (PaUtil_GetRingBufferReadAvailable(ring_buffer) < SLIDE_WINDOW)
 			continue;
 
+		/* Compute the FFT. */
 		memmove(fft_in, fft_in + SLIDE_WINDOW,
-			(FFT_WINDOW - SLIDE_WINDOW) * sizeof(float));
+			(ACTUAL_WINDOW - SLIDE_WINDOW) * sizeof(float));
 		ring_ret = PaUtil_ReadRingBuffer(ring_buffer,
-						 fft_in + (FFT_WINDOW - SLIDE_WINDOW),
+						 fft_in + (ACTUAL_WINDOW - SLIDE_WINDOW),
 						 SLIDE_WINDOW);
 		assert(ring_ret == SLIDE_WINDOW);
 
 		fftwf_execute(fft_plan);
 
-		time = window_to_seconds(window);
-		for (int i = 0; i < FFT_WINDOW / 2 + 1; i++) {
-			frequency = bin_to_frequency(i);
-			dbfs = fft_to_dbfs(fft_out[i]);
-			printf("%f %f %f\n", time, frequency, dbfs);
-		}
-		printf("\n");
+		/* Compute the current value in the raw stream. */
+		time = window_to_seconds(window++);
 
-		window++;
+		zero_dbfs = fft_to_dbfs(fft_out[frequency_to_bin(ZERO_FREQ)]);
+		one_dbfs = fft_to_dbfs(fft_out[frequency_to_bin(ONE_FREQ)]);
+
+		if ((zero_dbfs < -75.f && one_dbfs < -75.f) ||
+		    (fabs(zero_dbfs - one_dbfs) < 5.f))
+			val = 0;
+		else if (zero_dbfs > one_dbfs)
+			val = -1;
+		else
+			val = 1;
+
+		switch (state) {
+		case STATE_LISTENING:
+			if (val != prev) {
+				t0 = time;
+				wait_until = t0 + DELTA_STEADY;
+				state = STATE_NOISE_WAIT;
+			}
+			prev = val;
+			break;
+		case STATE_NOISE_WAIT:
+			if (time >= wait_until) {
+				n = 0;
+				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) - (DEMOD_WINDOW / 2.f);
+				state = STATE_DEMOD_WAIT;
+			} else {
+				if (val != prev) {
+					state = STATE_LISTENING;
+				}
+				prev = val;
+			}
+			break;
+		case STATE_DEMOD_WAIT:
+			if (time >= wait_until) {
+				counts.zero = 0;
+				counts.one = 0;
+				counts.none = 0;
+				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) + (DEMOD_WINDOW / 2.f);
+				state = STATE_DEMOD_GATHER;
+			}
+			break;
+		case STATE_DEMOD_GATHER:
+			if (time >= wait_until) {
+				int mostly;
+
+				mostly = calc_mostly(&counts);
+				if (mostly == 0) {
+					printf("%d\n", 0);
+				} else if (mostly == 1) {
+					printf("%d\n", 1);
+				} else {
+					state = STATE_LISTENING;
+					break;
+				}
+
+				n++;
+				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) - (DEMOD_WINDOW / 2.f);
+				state = STATE_DEMOD_WAIT;
+			} else {
+				fprintf(stderr, "%f 0\n", time);
+
+				if (val == -1)
+					counts.zero++;
+				else if (val == 1)
+					counts.one++;
+				else
+					counts.none++;
+			}
+			break;
+		default:
+			break;
+		}
 	}
 
-	fprintf(stderr, "got %s; exiting\n", strsignal(signum));
+	/* fprintf(stderr, "got %s; exiting\n", strsignal(signum)); */
 }
 
 int main(void)
