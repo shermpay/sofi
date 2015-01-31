@@ -192,8 +192,6 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) - (DEMOD_WINDOW / 2.f);
 				state = STATE_DEMOD_WAIT;
 			} else {
-				fprintf(stderr, "%f 0\n", time);
-
 				if (val == -1)
 					counts.zero++;
 				else if (val == 1)
@@ -207,7 +205,7 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 		}
 	}
 
-	/* fprintf(stderr, "got %s; exiting\n", strsignal(signum)); */
+	fprintf(stderr, "got %s; exiting\n", strsignal(signum));
 }
 
 int main(void)

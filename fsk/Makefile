@@ -6,10 +6,10 @@ all: sender receiver
 sender: sender.o fsk.h
 	$(CC) $(ALL_CFLAGS) -o $@ $^ -lm -lportaudio
 
-receiver: receiver.o pa_ringbuffer.o fsk.h
+receiver: receiver.o pa_ringbuffer.o
 	$(CC) $(ALL_CFLAGS) -o $@ $^ -lm -lportaudio -lfftw3f
 
-%.o: %.c
+%.o: %.c fsk.h
 	$(CC) $(ALL_CFLAGS) -o $@ -c $<
 
 .PHONY: clean
