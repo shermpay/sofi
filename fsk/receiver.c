@@ -151,7 +151,6 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 				wait_until = t0 + DELTA_STEADY;
 				state = STATE_NOISE_WAIT;
 			}
-			prev = val;
 			break;
 		case STATE_NOISE_WAIT:
 			if (time >= wait_until) {
@@ -159,10 +158,8 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) - (DEMOD_WINDOW / 2.f);
 				state = STATE_DEMOD_WAIT;
 			} else {
-				if (val != prev) {
+				if (val != prev)
 					state = STATE_LISTENING;
-				}
-				prev = val;
 			}
 			break;
 		case STATE_DEMOD_WAIT:
@@ -203,6 +200,8 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 		default:
 			break;
 		}
+
+		prev = val;
 	}
 
 	fprintf(stderr, "got %s; exiting\n", strsignal(signum));
