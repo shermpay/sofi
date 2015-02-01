@@ -15,7 +15,7 @@
 #define RING_BUFFER_SIZE (1 << 12)
 
 #define SAMPLE_RATE 44100
-#define FRAMES_PER_BUFFER 1024
+#define FRAMES_PER_BUFFER paFramesPerBufferUnspecified
 
 #define FFT_WINDOW 1024
 #define ACTUAL_WINDOW 256
