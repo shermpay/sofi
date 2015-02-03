@@ -111,6 +111,8 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 	int prev = 0;
 	int n;
 	struct sig_counts counts;
+	char byte = 0;
+	int bit = 0;
 
 	while (!(signum = signal_received)) {
 		float time;
@@ -176,13 +178,16 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 				int mostly;
 
 				mostly = calc_mostly(&counts);
-				if (mostly == 0) {
-					printf("%d\n", 0);
-				} else if (mostly == 1) {
-					printf("%d\n", 1);
-				} else {
+				if (mostly != 0 && mostly != 1) {
 					state = STATE_LISTENING;
 					break;
+				}
+
+				byte |= mostly << bit++;
+				if (bit == 8) {
+					printf("%c", byte);
+					byte = 0;
+					bit = 0;
 				}
 
 				n++;
