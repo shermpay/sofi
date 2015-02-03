@@ -12,6 +12,12 @@
 #include "pa_ringbuffer.h"
 #include "fsk.h"
 
+#if 0
+#define debug_printf(...) fprintf(stderr, __VA_ARGS__)
+#else
+#define debug_printf(...)
+#endif
+
 #define RING_BUFFER_SIZE (1 << 12)
 
 #define SAMPLE_RATE 44100
@@ -151,6 +157,7 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 			if (val != prev) {
 				t0 = time;
 				wait_until = t0 + DELTA_STEADY;
+				debug_printf("NOISE WAIT\n");
 				state = STATE_NOISE_WAIT;
 			}
 			break;
@@ -158,10 +165,13 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 			if (time >= wait_until) {
 				n = 0;
 				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) - (DEMOD_WINDOW / 2.f);
+				debug_printf("DEMOD WAIT\n");
 				state = STATE_DEMOD_WAIT;
 			} else {
-				if (val != prev)
+				if (val != prev) {
+					debug_printf("LISTENING\n");
 					state = STATE_LISTENING;
+				}
 			}
 			break;
 		case STATE_DEMOD_WAIT:
@@ -170,6 +180,7 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 				counts.one = 0;
 				counts.none = 0;
 				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) + (DEMOD_WINDOW / 2.f);
+				debug_printf("DEMOD GATHER\n");
 				state = STATE_DEMOD_GATHER;
 			}
 			break;
@@ -179,19 +190,23 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 
 				mostly = calc_mostly(&counts);
 				if (mostly != 0 && mostly != 1) {
+					debug_printf("LISTENING\n");
 					state = STATE_LISTENING;
 					break;
 				}
 
+				debug_printf("bit: %d\n", mostly);
 				byte |= mostly << bit++;
 				if (bit == 8) {
 					printf("%c", byte);
+					fflush(stdout);
 					byte = 0;
 					bit = 0;
 				}
 
 				n++;
 				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) - (DEMOD_WINDOW / 2.f);
+				debug_printf("DEMOD WAIT\n");
 				state = STATE_DEMOD_WAIT;
 			} else {
 				if (val == -1)
