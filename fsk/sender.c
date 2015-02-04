@@ -6,7 +6,10 @@
 #include <string.h>
 
 #include "portaudio.h"
+#include "pa_ringbuffer.h"
 #include "fsk.h"
+
+#define RING_BUFFER_SIZE (1 << 12)
 
 #define SAMPLE_RATE 44100
 #define FRAMES_PER_BUFFER paFramesPerBufferUnspecified
@@ -15,8 +18,8 @@
 #define ONE_AMP 1.f
 
 struct callback_data {
-	char *data;
-	size_t len;
+	PaUtilRingBuffer *ring_buffer;
+	bool first;
 	float phase;
 	int frame;
 	int bit_index;
@@ -29,27 +32,42 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 			 const PaStreamCallbackTimeInfo *time_info,
 			 PaStreamCallbackFlags status_flags, void *arg)
 {
+	ring_buffer_size_t ring_ret;
 	float *out = output_buffer;
 	struct callback_data *data = arg;
 	float frequency;
 	float amp;
 	unsigned long i;
+	void *data1, *data2;
+	ring_buffer_size_t size1, size2;
 
 	(void)input_buffer;
 	(void)time_info;
 	(void)status_flags;
 
 	for (i = 0; i < frames_per_buffer; i++) {
-		if (++data->frame >= SAMPLE_RATE / BAUD) {
-			if (++data->bit_index >= 8) {
-				if (data->len == 0)
+		if (data->first || data->frame + 1 >= SAMPLE_RATE / BAUD) {
+			if (data->first || data->bit_index + 1 >= 8) {
+				if (!data->first)
+					PaUtil_AdvanceRingBufferReadIndex(data->ring_buffer, 1);
+				else
+					data->first = false;
+				ring_ret = PaUtil_GetRingBufferReadRegions(data->ring_buffer, 1,
+									   &data1, &size1,
+									   &data2, &size2);
+				if (ring_ret == 0)
 					break;
-				data->byte = *data->data++;
-				data->len--;
+				assert(size1 == 1);
+				assert(size2 == 0);
+				data->byte = *(char *)data1;
 				data->bit_index = 0;
+			} else {
+				data->bit_index++;
 			}
 			data->bit = data->byte & (1 << data->bit_index);
 			data->frame = 0;
+		} else {
+			data->frame++;
 		}
 
 		frequency = data->bit ? ONE_FREQ : ZERO_FREQ;
@@ -60,9 +78,10 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 	}
 
 	if (i < frames_per_buffer) {
+		data->first = true;
+		data->phase = 0.f;
 		for (; i < frames_per_buffer; i++)
 			out[i] = 0.f;
-		return paComplete;
 	}
 
 	return paContinue;
@@ -77,6 +96,22 @@ int main(void)
 	size_t n = 0;
 	ssize_t ret;
 	int status = EXIT_SUCCESS;
+
+	PaUtilRingBuffer ring_buffer;
+	void *ring_buffer_ptr;
+
+	/* Initialize ring buffer. */
+	ring_buffer_ptr = malloc(RING_BUFFER_SIZE);
+	if (!ring_buffer_ptr) {
+		perror("malloc");
+		return EXIT_FAILURE;
+	}
+	PaUtil_InitializeRingBuffer(&ring_buffer, 1, RING_BUFFER_SIZE,
+				    ring_buffer_ptr);
+
+	data.ring_buffer = &ring_buffer;
+	data.first = true;
+	data.phase = 0.f;
 
 	err = Pa_Initialize();
 	if (err != paNoError) {
@@ -95,43 +130,35 @@ int main(void)
 		goto terminate;
 	}
 
+	err = Pa_StartStream(stream);
+	if (err != paNoError) {
+		fprintf(stderr, "PortAudio: starting stream failed: %s\n",
+			Pa_GetErrorText(err));
+		status = EXIT_FAILURE;
+		goto close_stream;
+	}
+
 	while ((ret = getline(&line, &n, stdin)) > 0) {
-		data.data = line;
-		data.len = ret;
-		data.phase = 0.f;
-		data.frame = SAMPLE_RATE / BAUD - 1;
-		data.bit_index = 7;
+		ring_buffer_size_t ring_ret;
 
-		err = Pa_StartStream(stream);
-		if (err != paNoError) {
-			fprintf(stderr, "PortAudio: starting stream failed: %s\n",
-				Pa_GetErrorText(err));
-			status = EXIT_FAILURE;
-			goto close_stream;
-		}
-
-		while ((err = Pa_IsStreamActive(stream)) == 1)
-			Pa_Sleep(100); /* XXX: gross. */
-
-		if (err != paNoError) {
-			fprintf(stderr, "PortAudio: checking stream failed: %s\n",
-				Pa_GetErrorText(err));
-			status = EXIT_FAILURE;
-		}
-
-
-		err = Pa_StopStream(stream);
-		if (err != paNoError) {
-			fprintf(stderr, "PortAudio: stopping stream failed: %s\n",
-				Pa_GetErrorText(err));
-			status = EXIT_FAILURE;
-			goto close_stream;
-		}
+		ring_ret = PaUtil_WriteRingBuffer(&ring_buffer, line, ret);
+		assert(ring_ret == ret);
 	}
 
 	if (ret == -1 && !feof(stdin)) {
 		perror("getline");
 		status = EXIT_FAILURE;
+	}
+
+	while (PaUtil_GetRingBufferReadAvailable(&ring_buffer) > 0)
+		Pa_Sleep(100); /* XXX: gross */
+
+	err = Pa_StopStream(stream);
+	if (err != paNoError) {
+		fprintf(stderr, "PortAudio: stopping stream failed: %s\n",
+			Pa_GetErrorText(err));
+		status = EXIT_FAILURE;
+		goto close_stream;
 	}
 
 close_stream:
@@ -152,5 +179,6 @@ terminate:
 
 out:
 	free(line);
+	free(ring_buffer_ptr);
 	return status;
 }
