@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <complex.h>
+#include <ctype.h>
 #include <math.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -81,8 +82,11 @@ static inline float fft_to_dbfs(float complex fft)
 enum state {
 	STATE_LISTENING,
 	STATE_NOISE_WAIT,
-	STATE_DEMOD_WAIT,
-	STATE_DEMOD_GATHER,
+	STATE_LENGTH_WAIT,
+	STATE_LENGTH_GATHER,
+	STATE_PAYLOAD_WAIT,
+	STATE_PAYLOAD_GATHER,
+	STATE_INTER_WAIT,
 };
 
 struct sig_counts {
@@ -91,22 +95,55 @@ struct sig_counts {
 	int none;
 };
 
-#define MOSTLY_THRESHOLD 0.50f
-
 static inline int calc_mostly(struct sig_counts *counts)
 {
-	int total = counts->one + counts->zero + counts->none;
-
-	if ((float)counts->one / (float)total >= MOSTLY_THRESHOLD)
-		return 1;
-	else if ((float)counts->zero / (float)total >= MOSTLY_THRESHOLD)
+	if (counts->zero > counts->one && counts->zero > counts->none)
 		return 0;
+	else if (counts->one > counts->zero && counts->one > counts->none)
+		return 1;
 	else
 		return -1;
 }
 
-void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
-		   float *fft_in, float complex *fft_out)
+static void print_frame(const struct sofi_msg *msg)
+{
+	printf("sofi_frame = {\n");
+	printf("\t.len = %" PRIu8 "\n", msg->len);
+	printf("\t.payload = \"");
+	for (unsigned i = 0; i < msg->len; i++) {
+		char c = msg->payload[i];
+		switch (c) {
+		case '\"':
+			fputs("\\\"", stdout);
+			break;
+		case '\\':
+			fputs("\\\\", stdout);
+			break;
+		case '\a':
+			fputs("\\a", stdout);
+			break;
+		case '\b':
+			fputs("\\b", stdout);
+			break;
+		case '\n':
+			fputs("\\n", stdout);
+			break;
+		case '\t':
+			fputs("\\t", stdout);
+			break;
+		default:
+			if (isprint(c))
+				fputc(c, stdout);
+			else
+				printf("\\%03o", (unsigned char)c);
+		}
+	}
+	printf("\"\n");
+	printf("}\n");
+}
+
+static void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
+			  float *fft_in, float complex *fft_out)
 {
 	ring_buffer_size_t ring_ret;
 	int signum;
@@ -119,6 +156,13 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 	struct sig_counts counts;
 	char byte = 0;
 	int bit = 0;
+	struct sofi_msg msg;
+	unsigned offset;
+
+#define STATE_TRANSITION(new_state) do {	\
+	state = new_state;			\
+	debug_printf("%s\n", #new_state);	\
+} while(0)
 
 	while (!(signum = signal_received)) {
 		float time;
@@ -157,57 +201,70 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 			if (val != prev) {
 				t0 = time;
 				wait_until = t0 + DELTA_STEADY;
-				debug_printf("NOISE WAIT\n");
-				state = STATE_NOISE_WAIT;
+				STATE_TRANSITION(STATE_NOISE_WAIT);
 			}
 			break;
 		case STATE_NOISE_WAIT:
 			if (time >= wait_until) {
+				msg.len = 0;
+				offset = 0;
 				n = 0;
 				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) - (DEMOD_WINDOW / 2.f);
-				debug_printf("DEMOD WAIT\n");
-				state = STATE_DEMOD_WAIT;
+				STATE_TRANSITION(STATE_LENGTH_WAIT);
 			} else {
-				if (val != prev) {
-					debug_printf("LISTENING\n");
-					state = STATE_LISTENING;
-				}
+				if (val != prev)
+					STATE_TRANSITION(STATE_LISTENING);
 			}
 			break;
-		case STATE_DEMOD_WAIT:
+		case STATE_LENGTH_WAIT:
+		case STATE_PAYLOAD_WAIT:
 			if (time >= wait_until) {
 				counts.zero = 0;
 				counts.one = 0;
 				counts.none = 0;
 				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) + (DEMOD_WINDOW / 2.f);
-				debug_printf("DEMOD GATHER\n");
-				state = STATE_DEMOD_GATHER;
+				if (state == STATE_LENGTH_WAIT)
+					STATE_TRANSITION(STATE_LENGTH_GATHER);
+				else if (state == STATE_PAYLOAD_WAIT)
+					STATE_TRANSITION(STATE_PAYLOAD_GATHER);
 			}
 			break;
-		case STATE_DEMOD_GATHER:
+		case STATE_LENGTH_GATHER:
+		case STATE_PAYLOAD_GATHER:
 			if (time >= wait_until) {
 				int mostly;
 
+				n++;
+
 				mostly = calc_mostly(&counts);
 				if (mostly != 0 && mostly != 1) {
-					debug_printf("LISTENING\n");
-					state = STATE_LISTENING;
+					memset(msg.payload + offset, 0, msg.len - offset);
+					print_frame(&msg);
+					wait_until = t0 + (n / (float)BAUD) + INTERPACKET_GAP;
+					STATE_TRANSITION(STATE_INTER_WAIT);
 					break;
 				}
 
-				debug_printf("bit: %d\n", mostly);
+				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) - (DEMOD_WINDOW / 2.f);
+
+				debug_printf("bit = %d\n", mostly);
 				byte |= mostly << bit++;
 				if (bit == 8) {
-					printf("%c", byte);
-					fflush(stdout);
+					if (state == STATE_LENGTH_GATHER) {
+						msg.len = (uint8_t)byte;
+					} else if (state == STATE_PAYLOAD_GATHER) {
+						if (offset < msg.len)
+							msg.payload[offset++] = byte;
+					}
+					STATE_TRANSITION(STATE_PAYLOAD_WAIT);
 					byte = 0;
 					bit = 0;
+				} else {
+					if (state == STATE_LENGTH_GATHER)
+						STATE_TRANSITION(STATE_LENGTH_WAIT);
+					else if (state == STATE_PAYLOAD_GATHER)
+						STATE_TRANSITION(STATE_PAYLOAD_WAIT);
 				}
-
-				n++;
-				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) - (DEMOD_WINDOW / 2.f);
-				debug_printf("DEMOD WAIT\n");
-				state = STATE_DEMOD_WAIT;
 			} else {
 				if (val == -1)
 					counts.zero++;
@@ -217,7 +274,9 @@ void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,
 					counts.none++;
 			}
 			break;
-		default:
+		case STATE_INTER_WAIT:
+			if (time >= wait_until)
+				STATE_TRANSITION(STATE_LISTENING);
 			break;
 		}
 
