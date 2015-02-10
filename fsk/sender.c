@@ -17,18 +17,22 @@
 #define ZERO_AMP 1.f
 #define ONE_AMP 1.f
 
-enum len_state {
-        LSTATE_READING,
-        LSTATE_SENDING,
-        LSTATE_DONE,
+#define INTERPACKET_FRAMES (INTERPACKET_GAP * SAMPLE_RATE)
+
+enum state {
+	STATE_IDLE,
+	STATE_TRANSMITTING,
+	STATE_INTERPACKET_GAP,
 };
 
 struct callback_data {
 	PaUtilRingBuffer *ring_buffer;
-	bool first;
-        enum len_state lstate;
+	enum state state;
+	unsigned long frame;
+	struct sofi_packet packet;
+	size_t packet_index;
+	size_t len;
 	float phase;
-	int frame;
 	int bit_index;
 	char byte;
 	bool bit;
@@ -44,7 +48,6 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 	struct callback_data *data = arg;
 	float frequency;
 	float amp;
-	unsigned long i;
 	void *data1, *data2;
 	ring_buffer_size_t size1, size2;
 
@@ -52,56 +55,58 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 	(void)time_info;
 	(void)status_flags;
 
-	for (i = 0; i < frames_per_buffer; i++) {
-		if (data->first || data->frame + 1 >= SAMPLE_RATE / BAUD) {
-			if ((data->lstate != LSTATE_SENDING && data->first) || data->bit_index + 1 >= 8) {
-                                if (data->lstate == LSTATE_SENDING) {
-                                        data->lstate = LSTATE_DONE;
-                                        data->frame++;
-                                }
-                                if (data->lstate == LSTATE_READING) {
-                                        ring_ret = PaUtil_GetRingBufferReadAvailable(data->ring_buffer);
-                                        if (ring_ret == 0)
-                                                break;
-                                        data->lstate = LSTATE_SENDING;
-                                        data->byte = ring_ret;
-                                } else {
-                                        if (!data->first)
-                                                PaUtil_AdvanceRingBufferReadIndex(data->ring_buffer, 1);
-                                        else
-                                                data->first = false;
-                                        ring_ret = PaUtil_GetRingBufferReadRegions(data->ring_buffer, 1,
-                                                                                   &data1, &size1,
-                                                                                   &data2, &size2);
-                                        if (ring_ret == 0)
-                                                break;
-                                        assert(size1 == 1);
-                                        assert(size2 == 0);
-                                        data->byte = *(char *)data1;
-                                }
-				data->bit_index = 0;
-			} else {
-				data->bit_index++;
+	for (unsigned long i = 0; i < frames_per_buffer; i++) {
+		switch (data->state) {
+		case STATE_IDLE:
+			ring_ret = PaUtil_GetRingBufferReadRegions(data->ring_buffer,
+								   sizeof(data->packet.payload),
+								   &data1, &size1,
+								   &data2, &size2);
+			if (ring_ret == 0) {
+				out[i] = 0.f;
+				break;
 			}
-			data->bit = data->byte & (1 << data->bit_index);
-			data->frame = 0;
-		} else {
-			data->frame++;
-		}
+			memcpy(data->packet.payload, data1, size1);
+			memcpy(data->packet.payload + size1, data2, size2);
+			data->packet.len = size1 + size2;
+			data->len = sizeof(data->packet.len) + data->packet.len;
+			data->packet_index = 0;
+			data->frame = SAMPLE_RATE / BAUD - 1;
+			data->bit_index = 7;
 
-		frequency = data->bit ? ONE_FREQ : ZERO_FREQ;
-		amp = data->bit ? ONE_AMP : ZERO_AMP;
+			data->state = STATE_TRANSMITTING;
+			/* Fallthrough. */
+		case STATE_TRANSMITTING:
+			if (++data->frame >= SAMPLE_RATE / BAUD) {
+				if (++data->bit_index >= 8) {
+					if (data->packet_index >= data->len) {
+						PaUtil_AdvanceRingBufferReadIndex(data->ring_buffer,
+										  data->packet.len);
+						data->state = STATE_INTERPACKET_GAP;
+						data->frame = 0;
+						out[i] = 0.f;
+						break;
+					}
+					data->byte = ((char *)&data->packet)[data->packet_index++];
+					data->bit_index = 0;
+				}
+				data->bit = data->byte & (1 << data->bit_index);
+				data->frame = 0;
+			}
 
-		out[i] = amp * sinf(data->phase / SAMPLE_RATE);
-		data->phase += 2 * M_PI * frequency;
-	}
+			frequency = data->bit ? ONE_FREQ : ZERO_FREQ;
+			amp = data->bit ? ONE_AMP : ZERO_AMP;
 
-	if (i < frames_per_buffer) {
-		data->first = true;
-		data->phase = 0.f;
-                data->lstate = LSTATE_READING;
-		for (; i < frames_per_buffer; i++)
+			out[i] = amp * sinf(data->phase / SAMPLE_RATE);
+			data->phase += 2 * M_PI * frequency;
+			break;
+		case STATE_INTERPACKET_GAP:
 			out[i] = 0.f;
+			if (++data->frame >= INTERPACKET_FRAMES) {
+				data->state = STATE_IDLE;
+				break;
+			}
+		}
 	}
 
 	return paContinue;
@@ -130,9 +135,8 @@ int main(void)
 				    ring_buffer_ptr);
 
 	data.ring_buffer = &ring_buffer;
-	data.first = true;
 	data.phase = 0.f;
-        data.lstate = LSTATE_READING;
+        data.state = STATE_IDLE;
 
 	err = Pa_Initialize();
 	if (err != paNoError) {

@@ -105,13 +105,13 @@ static inline int calc_mostly(struct sig_counts *counts)
 		return -1;
 }
 
-static void print_frame(const struct sofi_msg *msg)
+static void print_frame(const struct sofi_packet *packet)
 {
 	printf("sofi_frame = {\n");
-	printf("\t.len = %" PRIu8 "\n", msg->len);
+	printf("\t.len = %" PRIu8 "\n", packet->len);
 	printf("\t.payload = \"");
-	for (unsigned i = 0; i < msg->len; i++) {
-		char c = msg->payload[i];
+	for (unsigned i = 0; i < packet->len; i++) {
+		char c = packet->payload[i];
 		switch (c) {
 		case '\"':
 			fputs("\\\"", stdout);
@@ -156,7 +156,7 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_pl
 	struct sig_counts counts;
 	char byte = 0;
 	int bit = 0;
-	struct sofi_msg msg;
+	struct sofi_packet packet;
 	unsigned offset;
 
 #define STATE_TRANSITION(new_state) do {	\
@@ -206,7 +206,7 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_pl
 			break;
 		case STATE_NOISE_WAIT:
 			if (time >= wait_until) {
-				msg.len = 0;
+				packet.len = 0;
 				offset = 0;
 				n = 0;
 				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) - (DEMOD_WINDOW / 2.f);
@@ -238,8 +238,8 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_pl
 
 				mostly = calc_mostly(&counts);
 				if (mostly != 0 && mostly != 1) {
-					memset(msg.payload + offset, 0, msg.len - offset);
-					print_frame(&msg);
+					memset(packet.payload + offset, 0, packet.len - offset);
+					print_frame(&packet);
 					wait_until = t0 + (n / (float)BAUD) + INTERPACKET_GAP;
 					STATE_TRANSITION(STATE_INTER_WAIT);
 					break;
@@ -251,10 +251,10 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_pl
 				byte |= mostly << bit++;
 				if (bit == 8) {
 					if (state == STATE_LENGTH_GATHER) {
-						msg.len = (uint8_t)byte;
+						packet.len = (uint8_t)byte;
 					} else if (state == STATE_PAYLOAD_GATHER) {
-						if (offset < msg.len)
-							msg.payload[offset++] = byte;
+						if (offset < packet.len)
+							packet.payload[offset++] = byte;
 					}
 					STATE_TRANSITION(STATE_PAYLOAD_WAIT);
 					byte = 0;
