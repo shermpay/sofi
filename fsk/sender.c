@@ -17,9 +17,16 @@
 #define ZERO_AMP 1.f
 #define ONE_AMP 1.f
 
+enum len_state {
+        LSTATE_READING,
+        LSTATE_SENDING,
+        LSTATE_DONE,
+};
+
 struct callback_data {
 	PaUtilRingBuffer *ring_buffer;
 	bool first;
+        enum len_state lstate;
 	float phase;
 	int frame;
 	int bit_index;
@@ -47,19 +54,31 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 
 	for (i = 0; i < frames_per_buffer; i++) {
 		if (data->first || data->frame + 1 >= SAMPLE_RATE / BAUD) {
-			if (data->first || data->bit_index + 1 >= 8) {
-				if (!data->first)
-					PaUtil_AdvanceRingBufferReadIndex(data->ring_buffer, 1);
-				else
-					data->first = false;
-				ring_ret = PaUtil_GetRingBufferReadRegions(data->ring_buffer, 1,
-									   &data1, &size1,
-									   &data2, &size2);
-				if (ring_ret == 0)
-					break;
-				assert(size1 == 1);
-				assert(size2 == 0);
-				data->byte = *(char *)data1;
+			if ((data->lstate != LSTATE_SENDING && data->first) || data->bit_index + 1 >= 8) {
+                                if (data->lstate == LSTATE_SENDING) {
+                                        data->lstate = LSTATE_DONE;
+                                        data->frame++;
+                                }
+                                if (data->lstate == LSTATE_READING) {
+                                        ring_ret = PaUtil_GetRingBufferReadAvailable(data->ring_buffer);
+                                        if (ring_ret == 0)
+                                                break;
+                                        data->lstate = LSTATE_SENDING;
+                                        data->byte = ring_ret;
+                                } else {
+                                        if (!data->first)
+                                                PaUtil_AdvanceRingBufferReadIndex(data->ring_buffer, 1);
+                                        else
+                                                data->first = false;
+                                        ring_ret = PaUtil_GetRingBufferReadRegions(data->ring_buffer, 1,
+                                                                                   &data1, &size1,
+                                                                                   &data2, &size2);
+                                        if (ring_ret == 0)
+                                                break;
+                                        assert(size1 == 1);
+                                        assert(size2 == 0);
+                                        data->byte = *(char *)data1;
+                                }
 				data->bit_index = 0;
 			} else {
 				data->bit_index++;
@@ -80,6 +99,7 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 	if (i < frames_per_buffer) {
 		data->first = true;
 		data->phase = 0.f;
+                data->lstate = LSTATE_READING;
 		for (; i < frames_per_buffer; i++)
 			out[i] = 0.f;
 	}
@@ -112,6 +132,7 @@ int main(void)
 	data.ring_buffer = &ring_buffer;
 	data.first = true;
 	data.phase = 0.f;
+        data.lstate = LSTATE_READING;
 
 	err = Pa_Initialize();
 	if (err != paNoError) {
