@@ -59,7 +59,7 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 		switch (data->state) {
 		case STATE_IDLE:
 			ring_ret = PaUtil_GetRingBufferReadRegions(data->ring_buffer,
-								   sizeof(data->packet.payload),
+								   MAX_PACKET_LENGTH,
 								   &data1, &size1,
 								   &data2, &size2);
 			if (ring_ret == 0) {

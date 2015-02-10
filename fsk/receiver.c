@@ -155,7 +155,7 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_pl
 	int n;
 	struct sig_counts counts;
 	char byte = 0;
-	int bit = 0;
+	int bit_index = 0;
 	struct sofi_packet packet;
 	unsigned offset;
 
@@ -209,6 +209,8 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_pl
 				packet.len = 0;
 				offset = 0;
 				n = 0;
+				byte = 0;
+				bit_index = 0;
 				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) - (DEMOD_WINDOW / 2.f);
 				STATE_TRANSITION(STATE_LENGTH_WAIT);
 			} else {
@@ -248,17 +250,18 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_pl
 				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) - (DEMOD_WINDOW / 2.f);
 
 				debug_printf("bit = %d\n", mostly);
-				byte |= mostly << bit++;
-				if (bit == 8) {
+				byte |= mostly << bit_index++;
+				if (bit_index == 8) {
 					if (state == STATE_LENGTH_GATHER) {
 						packet.len = (uint8_t)byte;
 					} else if (state == STATE_PAYLOAD_GATHER) {
-						if (offset < packet.len)
+						if (offset < packet.len &&
+						    offset < MAX_PACKET_LENGTH)
 							packet.payload[offset++] = byte;
 					}
 					STATE_TRANSITION(STATE_PAYLOAD_WAIT);
 					byte = 0;
-					bit = 0;
+					bit_index = 0;
 				} else {
 					if (state == STATE_LENGTH_GATHER)
 						STATE_TRANSITION(STATE_LENGTH_WAIT);
