@@ -140,6 +140,7 @@ static void print_frame(const struct sofi_packet *packet)
 	}
 	printf("\"\n");
 	printf("}\n");
+	fflush(stdout);
 }
 
 static void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_plan,

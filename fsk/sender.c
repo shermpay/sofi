@@ -102,10 +102,9 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 			break;
 		case STATE_INTERPACKET_GAP:
 			out[i] = 0.f;
-			if (++data->frame >= INTERPACKET_FRAMES) {
+			if (++data->frame >= INTERPACKET_FRAMES)
 				data->state = STATE_IDLE;
-				break;
-			}
+			break;
 		}
 	}
 
