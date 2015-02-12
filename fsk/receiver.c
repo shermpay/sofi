@@ -3,21 +3,17 @@
 #include <ctype.h>
 #include <math.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "fftw3.h"
 #include "portaudio.h"
 #include "pa_ringbuffer.h"
 #include "fsk.h"
-
-#if 0
-#define debug_printf(...) fprintf(stderr, __VA_ARGS__)
-#else
-#define debug_printf(...)
-#endif
 
 #define RING_BUFFER_SIZE (1 << 12)
 
@@ -30,6 +26,19 @@
 
 #define DELTA_STEADY (1.f / (32.f * BAUD))
 #define DEMOD_WINDOW (1.f / (2.f * BAUD))
+
+static bool debug_mode;
+
+void debug_printf(const char *format, ...)
+{
+	va_list ap;
+
+	if (debug_mode) {
+		va_start(ap, format);
+		vfprintf(stderr, format, ap);
+		va_end(ap);
+	}
+}
 
 static int receive_callback(const void *input_buffer, void *output_buffer,
 			    unsigned long frames_per_buffer,
@@ -285,7 +294,7 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_pl
 	fprintf(stderr, "got %s; exiting\n", strsignal(signum));
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
 	fftwf_plan fft_plan = NULL;
 	float *fft_in = NULL;
@@ -299,6 +308,18 @@ int main(void)
 
 	int status = EXIT_SUCCESS;
 	struct sigaction sa;
+
+	int opt;
+
+	while ((opt = getopt(argc, argv, "d")) != -1) {
+		switch (opt) {
+		case 'd':
+			debug_mode = true;
+			break;
+		default:
+			return EXIT_FAILURE;
+		}
+	}
 
 	/* Handle signals. */
 	sa.sa_handler = signal_handler;
