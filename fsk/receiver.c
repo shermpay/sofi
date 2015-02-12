@@ -86,7 +86,6 @@ enum state {
 	STATE_LENGTH_GATHER,
 	STATE_PAYLOAD_WAIT,
 	STATE_PAYLOAD_GATHER,
-	STATE_INTER_WAIT,
 };
 
 struct sig_counts {
@@ -244,7 +243,7 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_pl
 					memset(packet.payload + offset, 0, packet.len - offset);
 					print_frame(&packet);
 					wait_until = t0 + (n / (float)BAUD) + INTERPACKET_GAP;
-					STATE_TRANSITION(STATE_INTER_WAIT);
+					STATE_TRANSITION(STATE_LISTENING);
 					break;
 				}
 
@@ -277,10 +276,6 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, const fftwf_plan fft_pl
 				else
 					counts.none++;
 			}
-			break;
-		case STATE_INTER_WAIT:
-			if (time >= wait_until)
-				STATE_TRANSITION(STATE_LISTENING);
 			break;
 		}
 
