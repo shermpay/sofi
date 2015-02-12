@@ -3,7 +3,7 @@
 
 #include <inttypes.h>
 
-#define BAUD 50
+#define BAUD 100
 #define ZERO_FREQ 2200.f
 #define ONE_FREQ 1200.f
 
