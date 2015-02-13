@@ -97,8 +97,10 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 			frequency = data->bit ? ONE_FREQ : ZERO_FREQ;
 			amp = data->bit ? ONE_AMP : ZERO_AMP;
 
-			out[i] = amp * sinf(data->phase / SAMPLE_RATE);
-			data->phase += 2 * M_PI * frequency;
+			out[i] = amp * sinf(data->phase);
+			data->phase += (2 * M_PI * frequency) / SAMPLE_RATE;
+			while (data->phase >= 2 * M_PI)
+				data->phase -= 2 * M_PI;
 			break;
 		case STATE_INTERPACKET_GAP:
 			out[i] = 0.f;
