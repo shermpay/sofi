@@ -9,7 +9,7 @@ sender: sender.o pa_ringbuffer.o
 	$(CC) $(ALL_CFLAGS) -o $@ $^ -lm -lportaudio
 
 receiver: receiver.o pa_ringbuffer.o
-	$(CC) $(ALL_CFLAGS) -o $@ $^ -lm -lportaudio -lfftw3f
+	$(CC) $(ALL_CFLAGS) -o $@ $^ -lm -lportaudio
 
 -include $(DEPS)
 
