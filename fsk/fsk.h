@@ -3,6 +3,8 @@
 
 #include <inttypes.h>
 
+#define M_PI 3.14159265359
+
 #define BAUD 100
 #define ZERO_FREQ 2200.f
 #define ONE_FREQ 1200.f

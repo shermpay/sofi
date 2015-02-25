@@ -118,11 +118,8 @@ int main(void)
 	PaStream *stream;
 	PaError err;
 	struct callback_data data;
-	char *line = NULL;
-	size_t n = 0;
-	ssize_t ret;
 	int status = EXIT_SUCCESS;
-
+	char c;
 	PaUtilRingBuffer ring_buffer;
 	void *ring_buffer_ptr;
 
@@ -164,15 +161,15 @@ int main(void)
 		goto close_stream;
 	}
 
-	while ((ret = getline(&line, &n, stdin)) > 0) {
-		ring_buffer_size_t ring_ret;
 
-		ring_ret = PaUtil_WriteRingBuffer(&ring_buffer, line, ret);
-		assert(ring_ret == ret);
+	while ((c = getc(stdin)) != EOF) {
+		ring_buffer_size_t ring_ret;
+		ring_ret = PaUtil_WriteRingBuffer(&ring_buffer, &c, 1);
+		assert(ring_ret == 1);
 	}
 
-	if (ret == -1 && !feof(stdin)) {
-		perror("getline");
+	if (!feof(stdin)) {
+		perror("getc");
 		status = EXIT_FAILURE;
 	}
 
@@ -204,7 +201,6 @@ terminate:
 	}
 
 out:
-	free(line);
 	free(ring_buffer_ptr);
 	return status;
 }

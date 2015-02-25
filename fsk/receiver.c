@@ -8,7 +8,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "portaudio.h"
 #include "pa_ringbuffer.h"
@@ -155,6 +154,9 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, float *sample_buf)
 } while(0)
 
 	while (!(signum = signal_received)) {
+		float sinf0 = 0.f, cosf0 = 0.f;
+		float sinf1 = 0.f, cosf1 = 0.f;
+		float f0, f1;
 		float time;
 		int val;
 
@@ -169,32 +171,21 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, float *sample_buf)
 						 SLIDE_WINDOW);
 		assert(ring_ret == SLIDE_WINDOW);
 
-		{
-			float sinf0 = 0.f, cosf0 = 0.f;
-			float sinf1 = 0.f, cosf1 = 0.f;
-			float f0, f1;
-
-			for (int i = 0; i < SLIDE_WINDOW; i++) {
-				sinf0 += sin(2 * M_PI * ZERO_FREQ * i / SAMPLE_RATE) * sample_buf[i];
-				cosf0 += cos(2 * M_PI * ZERO_FREQ * i / SAMPLE_RATE) * sample_buf[i];
-				sinf1 += sin(2 * M_PI * ONE_FREQ * i / SAMPLE_RATE) * sample_buf[i];
-				cosf1 += cos(2 * M_PI * ONE_FREQ * i / SAMPLE_RATE) * sample_buf[i];
-			}
-
-			f0 = sinf0 * sinf0 + cosf0 * cosf0;
-			f1 = sinf1 * sinf1 + cosf1 * cosf1;
-
-			fprintf(stderr, "0\t%f\t%f\n", time, f0);
-			fprintf(stderr, "1\t%f\t%f\n", time, f1);
-
-			if (f0 < 100.f && f1 < 100.f)
-				val = 0;
-			else if (f0 > f1)
-				val = -1;
-			else
-				val = 1;
-			fprintf(stderr, "2\t%f\t%d\n", time, val);
+		for (int i = 0; i < SLIDE_WINDOW; i++) {
+			sinf0 += sin(2 * M_PI * ZERO_FREQ * i / SAMPLE_RATE) * sample_buf[i];
+			cosf0 += cos(2 * M_PI * ZERO_FREQ * i / SAMPLE_RATE) * sample_buf[i];
+			sinf1 += sin(2 * M_PI * ONE_FREQ * i / SAMPLE_RATE) * sample_buf[i];
+			cosf1 += cos(2 * M_PI * ONE_FREQ * i / SAMPLE_RATE) * sample_buf[i];
 		}
+
+		f0 = sinf0 * sinf0 + cosf0 * cosf0;
+		f1 = sinf1 * sinf1 + cosf1 * cosf1;
+		if (f0 < 100.f && f1 < 100.f) /* XXX: arbitrary. */
+			val = 0;
+		else if (f0 > f1)
+			val = -1;
+		else
+			val = 1;
 
 		switch (state) {
 		case STATE_LISTENING:
@@ -273,10 +264,10 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, float *sample_buf)
 		prev = val;
 	}
 
-	fprintf(stderr, "got %s; exiting\n", strsignal(signum));
+	fprintf(stderr, "got %d; exiting\n", signum);
 }
 
-int main(int argc, char **argv)
+int main(void)
 {
 	float *sample_buf = NULL;
 
@@ -287,28 +278,9 @@ int main(int argc, char **argv)
 	PaError err;
 
 	int status = EXIT_SUCCESS;
-	struct sigaction sa;
-
-	int opt;
-
-	while ((opt = getopt(argc, argv, "d")) != -1) {
-		switch (opt) {
-		case 'd':
-			debug_mode = true;
-			break;
-		default:
-			return EXIT_FAILURE;
-		}
-	}
 
 	/* Handle signals. */
-	sa.sa_handler = signal_handler;
-	sa.sa_flags = SA_RESTART;
-	sigemptyset(&sa.sa_mask);
-	if (sigaction(SIGINT, &sa, NULL) == -1) {
-		perror("sigaction");
-		return EXIT_FAILURE;
-	}
+	signal(SIGINT, signal_handler);
 
 	/* Initialize ring buffer. */
 	ring_buffer_ptr = malloc(RING_BUFFER_SIZE * sizeof(float));

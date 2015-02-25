@@ -1,4 +1,4 @@
-ALL_CFLAGS := -Wall -Wextra -Werror -std=c99 -D_XOPEN_SOURCE=700 -g $(CFLAGS)
+ALL_CFLAGS := -Wall -Wextra -Werror -std=c99 -g $(CFLAGS)
 OBJS := sender.o receiver.o pa_ringbuffer.o
 DEPS := $(OBJS:.o=.d)
 
