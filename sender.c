@@ -36,6 +36,7 @@ struct callback_data {
 	int bit_index;
 	char byte;
 	bool bit;
+        unsigned int baud;
 };
 
 static int send_callback(const void *input_buffer, void *output_buffer,
@@ -71,13 +72,13 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 			data->packet.len = size1 + size2;
 			data->len = sizeof(data->packet.len) + data->packet.len;
 			data->packet_index = 0;
-			data->frame = SAMPLE_RATE / BAUD - 1;
+			data->frame = SAMPLE_RATE / data->baud - 1;
 			data->bit_index = 7;
 
 			data->state = STATE_TRANSMITTING;
 			/* Fallthrough. */
 		case STATE_TRANSMITTING:
-			if (++data->frame >= SAMPLE_RATE / BAUD) {
+			if (++data->frame >= SAMPLE_RATE / data->baud) {
 				if (++data->bit_index >= 8) {
 					if (data->packet_index >= data->len) {
 						PaUtil_AdvanceRingBufferReadIndex(data->ring_buffer,
@@ -113,7 +114,11 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 	return paContinue;
 }
 
-int main(void)
+void usage() {
+        printf("usage: sender -b BAUD\n");
+}
+
+int main(int argc, char **argv)
 {
 	PaStream *stream;
 	PaError err;
@@ -122,6 +127,20 @@ int main(void)
 	char c;
 	PaUtilRingBuffer ring_buffer;
 	void *ring_buffer_ptr;
+
+
+        if (argc != 3 || (strcmp(argv[1], "-b") != 0)) {
+                usage();
+                return EXIT_FAILURE;
+        } else {
+                char **endptr = NULL;
+                data.baud = strtol(argv[2], endptr, 10);
+                if (endptr != NULL || data.baud < 1) {
+                        usage();
+                        printf("BAUD should be an integer between 1 to 250\n");
+                        return EXIT_FAILURE;
+                }
+        }
 
 	/* Initialize ring buffer. */
 	ring_buffer_ptr = malloc(RING_BUFFER_SIZE);
@@ -143,6 +162,8 @@ int main(void)
 		status = EXIT_FAILURE;
 		goto out;
 	}
+
+        printf("Initializing BAUD at %d\n", data.baud);
 
 	err = Pa_OpenDefaultStream(&stream, 0, 1, paFloat32, SAMPLE_RATE,
 				   FRAMES_PER_BUFFER, send_callback, &data);
