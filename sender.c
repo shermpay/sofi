@@ -16,7 +16,7 @@
 
 #define INTERPACKET_FRAMES (INTERPACKET_GAP * SAMPLE_RATE)
 
-static unsigned int baud;
+static float baud;
 
 enum state {
 	STATE_IDLE,
@@ -133,10 +133,10 @@ int main(int argc, char **argv)
                 int temp = strtol(argv[2], endptr, 10);
                 if (endptr != NULL || temp < 1) {
                         usage();
-                        printf("BAUD should be an integer between 1 to 250\n");
+                        printf("baud should be an integer between 1 to 250\n");
                         return EXIT_FAILURE;
                 }
-                baud = (unsigned int) temp;
+                baud = (float)temp;
         }
 
 	/* Initialize ring buffer. */
@@ -159,8 +159,6 @@ int main(int argc, char **argv)
 		status = EXIT_FAILURE;
 		goto out;
 	}
-
-        printf("Initializing BAUD at %u\n", baud);
 
 	err = Pa_OpenDefaultStream(&stream, 0, 1, paFloat32, SAMPLE_RATE,
 				   FRAMES_PER_BUFFER, send_callback, &data);

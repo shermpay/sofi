@@ -26,7 +26,7 @@
 #define DEMOD_WINDOW (1.f / (2.f * baud))
 
 static bool debug_mode;
-static unsigned int baud;
+static float baud;
 
 static inline float delta_steady(int baud) {
         return (1.f / (32.f * baud));
@@ -308,12 +308,12 @@ int main(int argc, char **argv)
         } else {
                 char **endptr = NULL;
                 int temp = strtol(argv[2], endptr, 10);
-                if (endptr != NULL || baud < 1) {
+                if (endptr != NULL || temp < 1) {
                         usage();
-                        printf("BAUD should be an integer between 1 to 250\n");
+                        printf("baud should be an integer between 1 to 250\n");
                         return EXIT_FAILURE;
                 }
-                baud = (unsigned int) temp;
+                baud = (float)temp;
         }
 
 	/* Handle signals. */
