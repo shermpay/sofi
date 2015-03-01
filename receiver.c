@@ -85,20 +85,38 @@ enum state {
 	STATE_PAYLOAD_GATHER,
 };
 
-struct sig_counts {
-	int one;
-	int zero;
-	int none;
+static inline int strongest_symbol(const float *fs)
+{
+	int max_symbol = -1;
+	float max_val = 0.f;
+
+	for (int i = 0; i < NUM_SYMBOLS; i++) {
+		/* XXX: need a real heuristic for silence. */
+		if (fs[i] > 100.f && fs[i] > max_val) {
+			max_val = fs[i];
+			max_symbol = i;
+		}
+	}
+	return max_symbol;
+}
+
+struct symbol_counts {
+	unsigned int symbols[NUM_SYMBOLS];
+	unsigned int silence;
 };
 
-static inline int calc_mostly(struct sig_counts *counts)
+static inline int calc_mostly(struct symbol_counts *counts)
 {
-	if (counts->zero > counts->one && counts->zero > counts->none)
-		return 0;
-	else if (counts->one > counts->zero && counts->one > counts->none)
-		return 1;
-	else
-		return -1;
+	int max = -1;
+	unsigned int max_count = counts->silence;
+
+	for (int i = 0; i < NUM_SYMBOLS; i++) {
+		if (counts->symbols[i] > max_count) {
+			max_count = counts->symbols[i];
+			max = i;
+		}
+	}
+	return max;
 }
 
 static void print_frame(const struct sofi_packet *packet)
@@ -151,9 +169,9 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, float *sample_buf)
 	float wait_until;
 	int prev = -1;
 	int n;
-	struct sig_counts counts;
+	struct symbol_counts counts;
 	char byte = 0;
-	int bit_index = 0;
+	int symbol_index = 0;
 	struct sofi_packet packet;
 	unsigned offset;
 
@@ -163,11 +181,11 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, float *sample_buf)
 } while(0)
 
 	while (!(signum = signal_received)) {
-		float sinf0 = 0.f, cosf0 = 0.f;
-		float sinf1 = 0.f, cosf1 = 0.f;
-		float f0, f1;
+		float sinfs[NUM_SYMBOLS];
+		float cosfs[NUM_SYMBOLS];
+		float fs[NUM_SYMBOLS];
 		float time;
-		int val;
+		int symbol;
 
 		if (PaUtil_GetRingBufferReadAvailable(ring_buffer) < SLIDE_WINDOW)
 			continue;
@@ -180,31 +198,27 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, float *sample_buf)
 						 SLIDE_WINDOW);
 		assert(ring_ret == SLIDE_WINDOW);
 
+		memset(sinfs, 0, sizeof(sinfs));
+		memset(cosfs, 0, sizeof(cosfs));
 		for (int i = 0; i < SLIDE_WINDOW; i++) {
-			sinf0 += sin(2 * M_PI * ZERO_FREQ * i / SAMPLE_RATE) * sample_buf[i];
-			cosf0 += cos(2 * M_PI * ZERO_FREQ * i / SAMPLE_RATE) * sample_buf[i];
-			sinf1 += sin(2 * M_PI * ONE_FREQ * i / SAMPLE_RATE) * sample_buf[i];
-			cosf1 += cos(2 * M_PI * ONE_FREQ * i / SAMPLE_RATE) * sample_buf[i];
+			for (int j = 0; j < NUM_SYMBOLS; j++) {
+				sinfs[j] += sinf(2 * M_PI * symbol_freqs[j] * i / SAMPLE_RATE) * sample_buf[i];
+				cosfs[j] += cosf(2 * M_PI * symbol_freqs[j] * i / SAMPLE_RATE) * sample_buf[i];
+			}
 		}
-
-		f0 = sinf0 * sinf0 + cosf0 * cosf0;
-		f1 = sinf1 * sinf1 + cosf1 * cosf1;
-		if (f0 < 100.f && f1 < 100.f) /* XXX: arbitrary. */
-			val = 0;
-		else if (f0 > f1)
-			val = -1;
-		else
-			val = 1;
+		for (int j = 0; j < NUM_SYMBOLS; j++)
+			fs[j] = sinfs[j] * sinfs[j] + cosfs[j] * cosfs[j];
+		symbol = strongest_symbol(fs);
 
 		switch (state) {
 		case STATE_LISTENING:
-			if (val != prev) {
+			if (symbol != prev) {
 				t0 = time;
 				packet.len = 0;
 				offset = 0;
 				n = 0;
 				byte = 0;
-				bit_index = 0;
+				symbol_index = 0;
 				wait_until = t0 + (1.f / (2.f * baud)) + (n / (float)baud) - (demod_window(baud) / 2.f);
 				STATE_TRANSITION(STATE_LENGTH_WAIT);
 			}
@@ -212,9 +226,7 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, float *sample_buf)
 		case STATE_LENGTH_WAIT:
 		case STATE_PAYLOAD_WAIT:
 			if (time >= wait_until) {
-				counts.zero = 0;
-				counts.one = 0;
-				counts.none = 0;
+				memset(&counts, 0, sizeof(counts));
 				wait_until = t0 + (1.f / (2.f * baud)) + (n / (float)baud) + (demod_window(baud) / 2.f);
 				if (state == STATE_LENGTH_WAIT)
 					STATE_TRANSITION(STATE_LENGTH_GATHER);
@@ -230,7 +242,7 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, float *sample_buf)
 				n++;
 
 				mostly = calc_mostly(&counts);
-				if (mostly != 0 && mostly != 1) {
+				if (mostly == -1) {
 					memset(packet.payload + offset, 0, packet.len - offset);
 					print_frame(&packet);
 					wait_until = t0 + (n / (float)baud) + INTERPACKET_GAP;
@@ -241,8 +253,8 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, float *sample_buf)
 				wait_until = t0 + (1.f / (2.f * baud)) + (n / (float)baud) - (demod_window(baud) / 2.f);
 
 				debug_printf("bit = %d\n", mostly);
-				byte |= mostly << bit_index++;
-				if (bit_index == 8) {
+				byte |= bits_from_symbol(mostly, symbol_index++);
+				if (symbol_index >= SYMBOLS_PER_BYTE) {
 					if (state == STATE_LENGTH_GATHER) {
 						packet.len = (uint8_t)byte;
 					} else if (state == STATE_PAYLOAD_GATHER) {
@@ -252,7 +264,7 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, float *sample_buf)
 					}
 					STATE_TRANSITION(STATE_PAYLOAD_WAIT);
 					byte = 0;
-					bit_index = 0;
+					symbol_index = 0;
 				} else {
 					if (state == STATE_LENGTH_GATHER)
 						STATE_TRANSITION(STATE_LENGTH_WAIT);
@@ -260,17 +272,15 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, float *sample_buf)
 						STATE_TRANSITION(STATE_PAYLOAD_WAIT);
 				}
 			} else {
-				if (val == -1)
-					counts.zero++;
-				else if (val == 1)
-					counts.one++;
+				if (symbol == -1)
+					counts.silence++;
 				else
-					counts.none++;
+					counts.symbols[symbol]++;
 			}
 			break;
 		}
 
-		prev = val;
+		prev = symbol;
 	}
 
 	fprintf(stderr, "got %d; exiting\n", signum);

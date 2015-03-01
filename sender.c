@@ -14,9 +14,6 @@
 #define SAMPLE_RATE 44100
 #define FRAMES_PER_BUFFER paFramesPerBufferUnspecified
 
-#define ZERO_AMP 1.f
-#define ONE_AMP 1.f
-
 #define INTERPACKET_FRAMES (INTERPACKET_GAP * SAMPLE_RATE)
 
 static unsigned int baud;
@@ -35,9 +32,9 @@ struct callback_data {
 	size_t packet_index;
 	size_t len;
 	float phase;
-	int bit_index;
-	char byte;
-	bool bit;
+	unsigned char byte;
+	unsigned int symbol_index;
+	unsigned int symbol;
 };
 
 static int send_callback(const void *input_buffer, void *output_buffer,
@@ -49,7 +46,6 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 	float *out = output_buffer;
 	struct callback_data *data = arg;
 	float frequency;
-	float amp;
 	void *data1, *data2;
 	ring_buffer_size_t size1, size2;
 
@@ -74,13 +70,13 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 			data->len = sizeof(data->packet.len) + data->packet.len;
 			data->packet_index = 0;
 			data->frame = SAMPLE_RATE / baud - 1;
-			data->bit_index = 7;
+			data->symbol_index = SYMBOLS_PER_BYTE - 1;
 
 			data->state = STATE_TRANSMITTING;
 			/* Fallthrough. */
 		case STATE_TRANSMITTING:
 			if (++data->frame >= SAMPLE_RATE / baud) {
-				if (++data->bit_index >= 8) {
+				if (++data->symbol_index >= SYMBOLS_PER_BYTE) {
 					if (data->packet_index >= data->len) {
 						PaUtil_AdvanceRingBufferReadIndex(data->ring_buffer,
 										  data->packet.len);
@@ -90,16 +86,15 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 						break;
 					}
 					data->byte = ((char *)&data->packet)[data->packet_index++];
-					data->bit_index = 0;
+					data->symbol_index = 0;
 				}
-				data->bit = data->byte & (1 << data->bit_index);
+				data->symbol = symbol_from_byte(data->byte, data->symbol_index);
 				data->frame = 0;
 			}
 
-			frequency = data->bit ? ONE_FREQ : ZERO_FREQ;
-			amp = data->bit ? ONE_AMP : ZERO_AMP;
+			frequency = symbol_freqs[data->symbol];
 
-			out[i] = amp * sinf(data->phase);
+			out[i] = sinf(data->phase);
 			data->phase += (2 * M_PI * frequency) / SAMPLE_RATE;
 			while (data->phase >= 2 * M_PI)
 				data->phase -= 2 * M_PI;
