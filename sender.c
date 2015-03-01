@@ -19,6 +19,8 @@
 
 #define INTERPACKET_FRAMES (INTERPACKET_GAP * SAMPLE_RATE)
 
+static unsigned int baud;
+
 enum state {
 	STATE_IDLE,
 	STATE_TRANSMITTING,
@@ -36,7 +38,6 @@ struct callback_data {
 	int bit_index;
 	char byte;
 	bool bit;
-        unsigned int baud;
 };
 
 static int send_callback(const void *input_buffer, void *output_buffer,
@@ -72,13 +73,13 @@ static int send_callback(const void *input_buffer, void *output_buffer,
 			data->packet.len = size1 + size2;
 			data->len = sizeof(data->packet.len) + data->packet.len;
 			data->packet_index = 0;
-			data->frame = SAMPLE_RATE / data->baud - 1;
+			data->frame = SAMPLE_RATE / baud - 1;
 			data->bit_index = 7;
 
 			data->state = STATE_TRANSMITTING;
 			/* Fallthrough. */
 		case STATE_TRANSMITTING:
-			if (++data->frame >= SAMPLE_RATE / data->baud) {
+			if (++data->frame >= SAMPLE_RATE / baud) {
 				if (++data->bit_index >= 8) {
 					if (data->packet_index >= data->len) {
 						PaUtil_AdvanceRingBufferReadIndex(data->ring_buffer,
@@ -134,8 +135,8 @@ int main(int argc, char **argv)
                 return EXIT_FAILURE;
         } else {
                 char **endptr = NULL;
-                data.baud = strtol(argv[2], endptr, 10);
-                if (endptr != NULL || data.baud < 1) {
+                baud = strtol(argv[2], endptr, 10);
+                if (endptr != NULL || baud < 1) {
                         usage();
                         printf("BAUD should be an integer between 1 to 250\n");
                         return EXIT_FAILURE;
@@ -163,7 +164,7 @@ int main(int argc, char **argv)
 		goto out;
 	}
 
-        printf("Initializing BAUD at %d\n", data.baud);
+        printf("Initializing BAUD at %d\n", baud);
 
 	err = Pa_OpenDefaultStream(&stream, 0, 1, paFloat32, SAMPLE_RATE,
 				   FRAMES_PER_BUFFER, send_callback, &data);
