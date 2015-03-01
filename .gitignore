@@ -1,4 +1,4 @@
 *.o
 *.d
-fsk/sender
-fsk/receiver
+/sender
+/receiver

@@ -11,7 +11,7 @@
 
 #include "portaudio.h"
 #include "pa_ringbuffer.h"
-#include "fsk.h"
+#include "sofinc.h"
 
 #define RING_BUFFER_SIZE (1 << 12)
 
