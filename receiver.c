@@ -22,10 +22,19 @@
 #define ACTUAL_WINDOW 256
 #define SLIDE_WINDOW (ACTUAL_WINDOW / 4)
 
-#define DELTA_STEADY (1.f / (32.f * BAUD))
-#define DEMOD_WINDOW (1.f / (2.f * BAUD))
+#define DELTA_STEADY (1.f / (32.f * baud))
+#define DEMOD_WINDOW (1.f / (2.f * baud))
 
 static bool debug_mode;
+static unsigned int baud;
+
+static inline float delta_steady(int baud) {
+        return (1.f / (32.f * baud));
+}
+
+static inline float demod_window(int baud) {
+        return (1.f / (2.f * baud));
+}
 
 void debug_printf(const char *format, ...)
 {
@@ -196,7 +205,7 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, float *sample_buf)
 				n = 0;
 				byte = 0;
 				bit_index = 0;
-				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) - (DEMOD_WINDOW / 2.f);
+				wait_until = t0 + (1.f / (2.f * baud)) + (n / (float)baud) - (demod_window(baud) / 2.f);
 				STATE_TRANSITION(STATE_LENGTH_WAIT);
 			}
 			break;
@@ -206,7 +215,7 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, float *sample_buf)
 				counts.zero = 0;
 				counts.one = 0;
 				counts.none = 0;
-				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) + (DEMOD_WINDOW / 2.f);
+				wait_until = t0 + (1.f / (2.f * baud)) + (n / (float)baud) + (demod_window(baud) / 2.f);
 				if (state == STATE_LENGTH_WAIT)
 					STATE_TRANSITION(STATE_LENGTH_GATHER);
 				else if (state == STATE_PAYLOAD_WAIT)
@@ -224,12 +233,12 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, float *sample_buf)
 				if (mostly != 0 && mostly != 1) {
 					memset(packet.payload + offset, 0, packet.len - offset);
 					print_frame(&packet);
-					wait_until = t0 + (n / (float)BAUD) + INTERPACKET_GAP;
+					wait_until = t0 + (n / (float)baud) + INTERPACKET_GAP;
 					STATE_TRANSITION(STATE_LISTENING);
 					break;
 				}
 
-				wait_until = t0 + (1.f / (2.f * BAUD)) + (n / (float)BAUD) - (DEMOD_WINDOW / 2.f);
+				wait_until = t0 + (1.f / (2.f * baud)) + (n / (float)baud) - (demod_window(baud) / 2.f);
 
 				debug_printf("bit = %d\n", mostly);
 				byte |= mostly << bit_index++;
@@ -267,7 +276,11 @@ static void receiver_loop(PaUtilRingBuffer *ring_buffer, float *sample_buf)
 	fprintf(stderr, "got %d; exiting\n", signum);
 }
 
-int main(void)
+void usage() {
+        printf("usage: receiver -b BAUD\n");
+}
+
+int main(int argc, char **argv)
 {
 	float *sample_buf = NULL;
 
@@ -278,6 +291,19 @@ int main(void)
 	PaError err;
 
 	int status = EXIT_SUCCESS;
+
+        if (argc != 3 || (strcmp(argv[1], "-b") != 0)) {
+                usage();
+                return EXIT_FAILURE;
+        } else {
+                char **endptr = NULL;
+                baud = strtol(argv[2], endptr, 10);
+                if (endptr != NULL || baud < 1) {
+                        usage();
+                        printf("BAUD should be an integer between 1 to 250\n");
+                        return EXIT_FAILURE;
+                }
+        }
 
 	/* Handle signals. */
 	signal(SIGINT, signal_handler);
