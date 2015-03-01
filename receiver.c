@@ -297,12 +297,13 @@ int main(int argc, char **argv)
                 return EXIT_FAILURE;
         } else {
                 char **endptr = NULL;
-                baud = strtol(argv[2], endptr, 10);
+                int temp = strtol(argv[2], endptr, 10);
                 if (endptr != NULL || baud < 1) {
                         usage();
                         printf("BAUD should be an integer between 1 to 250\n");
                         return EXIT_FAILURE;
                 }
+                baud = (unsigned int) temp;
         }
 
 	/* Handle signals. */

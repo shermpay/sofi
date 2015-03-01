@@ -135,12 +135,13 @@ int main(int argc, char **argv)
                 return EXIT_FAILURE;
         } else {
                 char **endptr = NULL;
-                baud = strtol(argv[2], endptr, 10);
-                if (endptr != NULL || baud < 1) {
+                int temp = strtol(argv[2], endptr, 10);
+                if (endptr != NULL || temp < 1) {
                         usage();
                         printf("BAUD should be an integer between 1 to 250\n");
                         return EXIT_FAILURE;
                 }
+                baud = (unsigned int) temp;
         }
 
 	/* Initialize ring buffer. */
@@ -164,7 +165,7 @@ int main(int argc, char **argv)
 		goto out;
 	}
 
-        printf("Initializing BAUD at %d\n", baud);
+        printf("Initializing BAUD at %u\n", baud);
 
 	err = Pa_OpenDefaultStream(&stream, 0, 1, paFloat32, SAMPLE_RATE,
 				   FRAMES_PER_BUFFER, send_callback, &data);
