@@ -43,6 +43,7 @@ static void signal_handler(int signum)
 #define RECEIVER_BUFFER_SIZE (1 << 12)	/* 4K samples. */
 
 static float baud;
+static float demod_window_factor = 0.5f;
 
 static inline float interpacket_gap(void)
 {
@@ -56,7 +57,7 @@ static inline float delta_steady(void)
 
 static inline float demod_window(void)
 {
-        return 1.f / (2.f * baud);
+        return demod_window_factor / baud;
 }
 
 /* Symbol definitions. */
@@ -457,7 +458,7 @@ int main(int argc, char **argv)
 	int ret;
 	int opt;
 
-	while ((opt = getopt(argc, argv, "db:h")) != -1) {
+	while ((opt = getopt(argc, argv, "db:w:h")) != -1) {
 		char *end;
 		long temp;
 
@@ -467,6 +468,11 @@ int main(int argc, char **argv)
 			if (*end != '\0')
 				usage(true);
 			baud = (float)temp;
+			break;
+                case 'w':
+                        demod_window_factor = strtof(optarg, &end);
+			if (*end != '\0')
+				usage(true);
 			break;
 		case 'd':
 			debug_mode++;
