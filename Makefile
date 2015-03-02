@@ -1,21 +1,18 @@
 ALL_CFLAGS := -Wall -Wextra -Werror -std=c99 -g $(CFLAGS)
-OBJS := sender.o receiver.o pa_ringbuffer.o
+OBJS := sofinc.o pa_ringbuffer.o
 DEPS := $(OBJS:.o=.d)
 
 .PHONY: all
-all: sender receiver
+all: sofinc
 
-sender: sender.o pa_ringbuffer.o
-	$(CC) $(ALL_CFLAGS) -o $@ $^ -lm -lportaudio
+sofinc: sofinc.o pa_ringbuffer.o
+	$(CC) $(ALL_CFLAGS) -o $@ $^ -pthread -lm -lportaudio
 
-receiver: receiver.o pa_ringbuffer.o
-	$(CC) $(ALL_CFLAGS) -o $@ $^ -lm -lportaudio
+%.o: %.c
+	$(CC) $(ALL_CFLAGS) -MMD -o $@ -c $< -pthread
 
 -include $(DEPS)
 
-%.o: %.c
-	$(CC) $(ALL_CFLAGS) -MMD -o $@ -c $<
-
 .PHONY: clean
 clean:
-	rm -f sender receiver $(OBJS) $(DEPS)
+	rm -f sofinc $(OBJS) $(DEPS)

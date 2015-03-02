@@ -2,3 +2,4 @@
 *.d
 /sender
 /receiver
+/sofinc
