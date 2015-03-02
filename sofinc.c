@@ -18,12 +18,12 @@
 
 #define M_PI 3.14159265359f
 
-static bool debug_mode;
-void debug_printf(const char *format, ...)
+static int debug_mode;
+void debug_printf(int v, const char *format, ...)
 {
 	va_list ap;
 
-	if (debug_mode) {
+	if (debug_mode >= v) {
 		va_start(ap, format);
 		vfprintf(stderr, format, ap);
 		va_end(ap);
@@ -270,6 +270,11 @@ static inline int calc_mostly(struct symbol_counts *counts)
 
 static void print_frame(const struct sofi_packet *packet)
 {
+	if (debug_mode < 1) {
+		fwrite(packet->payload, 1, packet->len, stdout);
+		return;
+	}
+
 	if (packet->len == 0)
 		return;
 	printf("sofi_frame = {\n");
@@ -331,7 +336,7 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 
 #define RECV_STATE_TRANSITION(new_state) do {	\
 	state = new_state;			\
-	debug_printf("%s\n", #new_state);	\
+	debug_printf(2, "%s\n", #new_state);	\
 } while(0)
 
 	while (!(signum = signal_received)) {
@@ -398,7 +403,6 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 
 				wait_until = t0 + (1.f / (2.f * baud)) + (n / baud) - (demod_window() / 2.f);
 
-				debug_printf("bit = %d\n", mostly);
 				byte |= bits_from_symbol(mostly, symbol_index++);
 				if (symbol_index >= SYMBOLS_PER_BYTE) {
 					if (state == RECV_STATE_LENGTH_GATHER) {
@@ -434,7 +438,9 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 
 static void usage(bool error)
 {
-	fprintf(error ? stderr : stdout, "usage: sofinc -b BAUD\n");
+	fprintf(error ? stderr : stdout,
+		"Usage: sofinc [-d] -b BAUD\n"
+		"       sofinc -h\n");
 	exit(error ? EXIT_FAILURE : EXIT_SUCCESS);
 }
 
@@ -449,19 +455,30 @@ int main(int argc, char **argv)
 	float *receiver_window = NULL;
 	pthread_t sender_thread;
 	int ret;
+	int opt;
 
-	/* Parse command line options. */
-	if (argc == 2 && strcmp(argv[1], "-h") == 0) {
-		usage(false);
-	} else if (argc != 3 || strcmp(argv[1], "-b") != 0) {
-                usage(true);
-        } else {
+	while ((opt = getopt(argc, argv, "db:h")) != -1) {
 		char *end;
-                long temp = strtol(argv[2], &end, 10);
-                if (*end != '\0' || temp <= 0)
+		long temp;
+
+		switch (opt) {
+		case 'b':
+			temp = strtol(optarg, &end, 10);
+			if (*end != '\0')
+				usage(true);
+			baud = (float)temp;
+			break;
+		case 'd':
+			debug_mode++;
+			break;
+		case 'h':
+			usage(false);
+		default:
 			usage(true);
-                baud = (float)temp;
-        }
+		}
+	}
+	if (baud < 1.f)
+		usage(true);
 
 	/* Initialize callback data and receiver window buffer. */
 	sender_buffer_ptr = malloc(SENDER_BUFFER_SIZE);
