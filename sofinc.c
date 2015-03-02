@@ -148,6 +148,7 @@ static int sofi_callback(const void *input_buffer, void *output_buffer,
 	float frequency;
 	void *data1, *data2;
 	ring_buffer_size_t size1, size2;
+	bool first = false;
 
 	(void)time_info;
 	(void)status_flags;
@@ -168,14 +169,13 @@ static int sofi_callback(const void *input_buffer, void *output_buffer,
 			data->sender.packet.len = size1 + size2;
 			data->sender.len = sizeof(data->sender.packet.len) + data->sender.packet.len;
 			data->sender.packet_index = 0;
-			data->sender.frame = SAMPLE_RATE / baud - 1;
-			data->sender.symbol_index = symbols_per_byte() - 1;
 
+			first = true;
 			data->sender.state = SEND_STATE_TRANSMITTING;
 			/* Fallthrough. */
 		case SEND_STATE_TRANSMITTING:
-			if (++data->sender.frame >= SAMPLE_RATE / baud) {
-				if (++data->sender.symbol_index >= symbols_per_byte()) {
+			if (first || ++data->sender.frame >= SAMPLE_RATE / baud) {
+				if (first || ++data->sender.symbol_index >= symbols_per_byte()) {
 					if (data->sender.packet_index >= data->sender.len) {
 						PaUtil_AdvanceRingBufferReadIndex(&data->sender.buffer,
 										  data->sender.packet.len);
@@ -197,6 +197,7 @@ static int sofi_callback(const void *input_buffer, void *output_buffer,
 			data->sender.phase += (2 * M_PI * frequency) / SAMPLE_RATE;
 			while (data->sender.phase >= 2 * M_PI)
 				data->sender.phase -= 2 * M_PI;
+			first = false;
 			break;
 		case SEND_STATE_INTERPACKET_GAP:
 			out[i] = 0.f;
