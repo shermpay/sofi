@@ -440,7 +440,7 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 static void usage(bool error)
 {
 	fprintf(error ? stderr : stdout,
-		"Usage: sofinc [-d] -b BAUD\n"
+		"Usage: sofinc [-d] [-w DEMOD_WINDOW] -b BAUD\n"
 		"       sofinc -h\n");
 	exit(error ? EXIT_FAILURE : EXIT_SUCCESS);
 }
