@@ -40,20 +40,20 @@ static void signal_handler(int signum)
 
 /* Transmission parameters. */
 #define SAMPLE_RATE 44100
-#define RECEIVER_WINDOW 64 /* XXX: should be in seconds, not samples. */
 #define SENDER_BUFFER_SIZE (1 << 12)	/* 4K characters. */
 #define RECEIVER_BUFFER_SIZE (1 << 12)	/* 4K samples. */
 
 static float baud;
+static float recv_window_factor = 0.1f;
+
+static inline int receiver_window(void)
+{
+	return (int)(recv_window_factor / baud * SAMPLE_RATE);
+}
 
 static inline float interpacket_gap(void)
 {
 	return 2.f / baud;
-}
-
-static inline float delta_steady(void)
-{
-        return 1.f / (32.f * baud);
 }
 
 /* Symbol definitions. */
@@ -224,7 +224,7 @@ static void sender_loop(PaUtilRingBuffer *buffer)
 			continue;
 		}
 		ring_ret = PaUtil_WriteRingBuffer(buffer, &c, 1);
-		assert(ring_ret == 1);
+		assert(ring_ret == 1); /* XXX */
 	}
 }
 
@@ -252,7 +252,7 @@ static inline int strongest_symbol(const float *fs)
 /* XXX: convert window to frame to time in seconds. */
 static inline float window_to_seconds(int window)
 {
-	return (float)window * (float)RECEIVER_WINDOW / (float)SAMPLE_RATE;
+	return (float)window * (float)receiver_window() / (float)SAMPLE_RATE;
 }
 
 static inline int calc_mostly(struct symbol_counts *counts)
@@ -339,18 +339,18 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 } while(0)
 
 	while (!(signum = signal_received)) {
-		if (PaUtil_GetRingBufferReadAvailable(buffer) < RECEIVER_WINDOW)
+		if (PaUtil_GetRingBufferReadAvailable(buffer) < receiver_window())
 			continue;
 
 		time = window_to_seconds(window++);
 
 		ring_ret = PaUtil_ReadRingBuffer(buffer, window_buffer,
-						 RECEIVER_WINDOW);
-		assert(ring_ret == RECEIVER_WINDOW);
+						 receiver_window());
+		assert(ring_ret == receiver_window());
 
 		memset(sinfs, 0, sizeof(sinfs));
 		memset(cosfs, 0, sizeof(cosfs));
-		for (int i = 0; i < RECEIVER_WINDOW; i++) {
+		for (int i = 0; i < receiver_window(); i++) {
 			for (int j = 0; j < num_symbols(); j++) {
 				sinfs[j] += sinf(2 * M_PI * symbol_freqs[j] * i / SAMPLE_RATE) * window_buffer[i];
 				cosfs[j] += cosf(2 * M_PI * symbol_freqs[j] * i / SAMPLE_RATE) * window_buffer[i];
@@ -422,7 +422,7 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 static void usage(bool error)
 {
 	fprintf(error ? stderr : stdout,
-		"Usage: %s [-d] [-f FREQ1,FREQ2,...] -b BAUD\n"
+		"Usage: %s [-d] [-f FREQ1,FREQ2,...] [-w RECV_WINDOW] -b BAUD\n"
 		"       %s -h\n", progname, progname);
 	exit(error ? EXIT_FAILURE : EXIT_SUCCESS);
 }
@@ -435,25 +435,23 @@ int main(int argc, char **argv)
 	struct callback_data data;
 	void *sender_buffer_ptr = NULL;
 	void *receiver_buffer_ptr = NULL;
-	float *receiver_window = NULL;
+	float *window_buffer = NULL;
 	pthread_t sender_thread;
 	int ret;
 	int opt;
 
 	if (argc > 0)
 		progname = argv[0];
-	while ((opt = getopt(argc, argv, "db:f:h")) != -1) {
+	while ((opt = getopt(argc, argv, "db:f:w:h")) != -1) {
 		char *end;
-		long temp;
 		float freq;
 		int i;
 
 		switch (opt) {
 		case 'b':
-			temp = strtol(optarg, &end, 10);
+			baud = strtof(optarg, &end);
 			if (*end != '\0')
 				usage(true);
-			baud = (float)temp;
 			break;
 		case 'd':
 			debug_mode++;
@@ -485,6 +483,16 @@ int main(int argc, char **argv)
 				usage(true);
 			}
 			break;
+		case 'w':
+			recv_window_factor = strtof(optarg, &end);
+			if (*end != '\0')
+				usage(true);
+			if (recv_window_factor <= 0.f) {
+				fprintf(stderr, "%s: receiver window factor must be positive\n",
+					progname);
+				usage(true);
+			}
+			break;
 		case 'h':
 			usage(false);
 		default:
@@ -493,6 +501,13 @@ int main(int argc, char **argv)
 	}
 	if (baud < 1.f)
 		usage(true);
+	if (debug_mode > 0) {
+		fprintf(stderr,
+			"Sample rate:\t%d Hz\n"
+			"Baud:\t\t%.2f symbols/sec\n"
+			"Window:\t\t%d samples\n",
+			SAMPLE_RATE, baud, receiver_window());
+	}
 
 	if (symbol_width == 0) {
 		symbol_width = 1;
@@ -515,8 +530,8 @@ int main(int argc, char **argv)
 	data.sender.phase = 0.f;
         data.sender.state = SEND_STATE_IDLE;
 
-	receiver_window = calloc(RECEIVER_WINDOW, sizeof(float));
-	if (!receiver_window) {
+	window_buffer = calloc(receiver_window(), sizeof(float));
+	if (!window_buffer) {
 		perror("calloc");
 		status = EXIT_FAILURE;
 		goto out;
@@ -565,7 +580,7 @@ int main(int argc, char **argv)
 		status = EXIT_FAILURE;
 		goto close_stream;
 	}
-	receiver_loop(&data.receiver.buffer, receiver_window);
+	receiver_loop(&data.receiver.buffer, window_buffer);
 	pthread_cancel(sender_thread);
 
 	/* Cleanup. */
@@ -594,6 +609,6 @@ terminate:
 out:
 	free(sender_buffer_ptr);
 	free(receiver_buffer_ptr);
-	free(receiver_window);
+	free(window_buffer);
 	return status;
 }
