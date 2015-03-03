@@ -448,8 +448,8 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 static void usage(bool error)
 {
 	fprintf(error ? stderr : stdout,
-		"Usage: %1$s [-d] [-f FREQ1,FREQ2,...] [-w DEMOD_WINDOW] -b BAUD\n"
-		"       %1$s -h\n", progname);
+		"Usage: %s [-d] [-f FREQ1,FREQ2,...] [-w DEMOD_WINDOW] -b BAUD\n"
+		"       %s -h\n", progname, progname);
 	exit(error ? EXIT_FAILURE : EXIT_SUCCESS);
 }
 
