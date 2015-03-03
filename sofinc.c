@@ -45,7 +45,6 @@ static void signal_handler(int signum)
 #define RECEIVER_BUFFER_SIZE (1 << 12)	/* 4K samples. */
 
 static float baud;
-static float demod_window_factor = 0.5f;
 
 static inline float interpacket_gap(void)
 {
@@ -55,11 +54,6 @@ static inline float interpacket_gap(void)
 static inline float delta_steady(void)
 {
         return 1.f / (32.f * baud);
-}
-
-static inline float demod_window(void)
-{
-        return demod_window_factor / baud;
 }
 
 /* Symbol definitions. */
@@ -107,9 +101,7 @@ enum sender_state {
 
 enum receiver_state {
 	RECV_STATE_LISTENING,
-	RECV_STATE_LENGTH_WAIT,
 	RECV_STATE_LENGTH_GATHER,
-	RECV_STATE_PAYLOAD_WAIT,
 	RECV_STATE_PAYLOAD_GATHER,
 };
 
@@ -377,19 +369,9 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 				n = 0;
 				byte = 0;
 				symbol_index = 0;
-				wait_until = t0 + (1.f / (2.f * baud)) + (n / (float)baud) - (demod_window() / 2.f);
-				RECV_STATE_TRANSITION(RECV_STATE_LENGTH_WAIT);
-			}
-			break;
-		case RECV_STATE_LENGTH_WAIT:
-		case RECV_STATE_PAYLOAD_WAIT:
-			if (time >= wait_until) {
+				wait_until = t0 + ((n + 1) / baud);
 				memset(&counts, 0, sizeof(counts));
-				wait_until = t0 + (1.f / (2.f * baud)) + (n / baud) + (demod_window() / 2.f);
-				if (state == RECV_STATE_LENGTH_WAIT)
-					RECV_STATE_TRANSITION(RECV_STATE_LENGTH_GATHER);
-				else if (state == RECV_STATE_PAYLOAD_WAIT)
-					RECV_STATE_TRANSITION(RECV_STATE_PAYLOAD_GATHER);
+				RECV_STATE_TRANSITION(RECV_STATE_LENGTH_GATHER);
 			}
 			break;
 		case RECV_STATE_LENGTH_GATHER:
@@ -397,36 +379,30 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 			if (time >= wait_until) {
 				int mostly;
 
-				n++;
-
 				mostly = calc_mostly(&counts);
+				memset(&counts, 0, sizeof(counts));
 				if (mostly == -1) {
 					memset(packet.payload + offset, 0, packet.len - offset);
 					print_frame(&packet);
-					wait_until = t0 + (n / baud) + interpacket_gap();
 					RECV_STATE_TRANSITION(RECV_STATE_LISTENING);
 					break;
 				}
 
-				wait_until = t0 + (1.f / (2.f * baud)) + (n / baud) - (demod_window() / 2.f);
+				n++;
+				wait_until = t0 + ((n + 1) / baud);
 
 				byte |= bits_from_symbol(mostly, symbol_index++);
 				if (symbol_index >= symbols_per_byte()) {
 					if (state == RECV_STATE_LENGTH_GATHER) {
 						packet.len = (uint8_t)byte;
+						RECV_STATE_TRANSITION(RECV_STATE_PAYLOAD_GATHER);
 					} else if (state == RECV_STATE_PAYLOAD_GATHER) {
 						if (offset < packet.len &&
 						    offset < MAX_PACKET_LENGTH)
 							packet.payload[offset++] = byte;
 					}
-					RECV_STATE_TRANSITION(RECV_STATE_PAYLOAD_WAIT);
 					byte = 0;
 					symbol_index = 0;
-				} else {
-					if (state == RECV_STATE_LENGTH_GATHER)
-						RECV_STATE_TRANSITION(RECV_STATE_LENGTH_WAIT);
-					else if (state == RECV_STATE_PAYLOAD_GATHER)
-						RECV_STATE_TRANSITION(RECV_STATE_PAYLOAD_WAIT);
 				}
 			} else {
 				if (symbol == -1)
@@ -446,7 +422,7 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 static void usage(bool error)
 {
 	fprintf(error ? stderr : stdout,
-		"Usage: %s [-d] [-f FREQ1,FREQ2,...] [-w DEMOD_WINDOW] -b BAUD\n"
+		"Usage: %s [-d] [-f FREQ1,FREQ2,...] -b BAUD\n"
 		"       %s -h\n", progname, progname);
 	exit(error ? EXIT_FAILURE : EXIT_SUCCESS);
 }
@@ -466,7 +442,7 @@ int main(int argc, char **argv)
 
 	if (argc > 0)
 		progname = argv[0];
-	while ((opt = getopt(argc, argv, "db:f:w:h")) != -1) {
+	while ((opt = getopt(argc, argv, "db:f:h")) != -1) {
 		char *end;
 		long temp;
 		float freq;
@@ -478,11 +454,6 @@ int main(int argc, char **argv)
 			if (*end != '\0')
 				usage(true);
 			baud = (float)temp;
-			break;
-                case 'w':
-                        demod_window_factor = strtof(optarg, &end);
-			if (*end != '\0')
-				usage(true);
 			break;
 		case 'd':
 			debug_mode++;
