@@ -1,5 +1,1 @@
-*.o
-*.d
-/sender
-/receiver
-/sofinc
+/build
