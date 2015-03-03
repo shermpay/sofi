@@ -284,8 +284,6 @@ static void print_frame(const struct sofi_packet *packet)
 		return;
 	}
 
-	if (packet->len == 0)
-		return;
 	printf("sofi_frame = {\n");
 	printf("\t.len = %" PRIu8 "\n", packet->len);
 	printf("\t.payload = \"");
