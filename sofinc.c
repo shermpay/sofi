@@ -39,16 +39,16 @@ static void signal_handler(int signum)
 }
 
 /* Transmission parameters. */
-#define SAMPLE_RATE 44100
 #define SENDER_BUFFER_SIZE (1 << 12)	/* 4K characters. */
 #define RECEIVER_BUFFER_SIZE (1 << 12)	/* 4K samples. */
 
+static long sample_rate = 44100;
 static float baud;
 static float recv_window_factor = 0.1f;
 
 static inline int receiver_window(void)
 {
-	return (int)(recv_window_factor / baud * SAMPLE_RATE);
+	return (int)(recv_window_factor / baud * (float)sample_rate);
 }
 
 static inline float interpacket_gap(void)
@@ -166,7 +166,7 @@ static int sofi_callback(const void *input_buffer, void *output_buffer,
 			data->sender.state = SEND_STATE_TRANSMITTING;
 			/* Fallthrough. */
 		case SEND_STATE_TRANSMITTING:
-			if (first || ++data->sender.frame >= SAMPLE_RATE / baud) {
+			if (first || ++data->sender.frame >= sample_rate / baud) {
 				if (first || ++data->sender.symbol_index >= symbols_per_byte()) {
 					if (data->sender.packet_index >= data->sender.len) {
 						PaUtil_AdvanceRingBufferReadIndex(&data->sender.buffer,
@@ -186,14 +186,14 @@ static int sofi_callback(const void *input_buffer, void *output_buffer,
 			frequency = symbol_freqs[data->sender.symbol];
 
 			out[i] = sinf(data->sender.phase);
-			data->sender.phase += (2 * M_PI * frequency) / SAMPLE_RATE;
+			data->sender.phase += (2 * M_PI * frequency) / sample_rate;
 			while (data->sender.phase >= 2 * M_PI)
 				data->sender.phase -= 2 * M_PI;
 			first = false;
 			break;
 		case SEND_STATE_INTERPACKET_GAP:
 			out[i] = 0.f;
-			if (++data->sender.frame >= interpacket_gap() * SAMPLE_RATE)
+			if (++data->sender.frame >= interpacket_gap() * sample_rate)
 				data->sender.state = SEND_STATE_IDLE;
 			break;
 		}
@@ -252,7 +252,7 @@ static inline int strongest_symbol(const float *fs)
 /* XXX: convert window to frame to time in seconds. */
 static inline float window_to_seconds(int window)
 {
-	return (float)window * (float)receiver_window() / (float)SAMPLE_RATE;
+	return (float)window * (float)receiver_window() / (float)sample_rate;
 }
 
 static inline int calc_mostly(struct symbol_counts *counts)
@@ -352,8 +352,8 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 		memset(cosfs, 0, sizeof(cosfs));
 		for (int i = 0; i < receiver_window(); i++) {
 			for (int j = 0; j < num_symbols(); j++) {
-				sinfs[j] += sinf(2 * M_PI * symbol_freqs[j] * i / SAMPLE_RATE) * window_buffer[i];
-				cosfs[j] += cosf(2 * M_PI * symbol_freqs[j] * i / SAMPLE_RATE) * window_buffer[i];
+				sinfs[j] += sinf(2 * M_PI * symbol_freqs[j] * i / sample_rate) * window_buffer[i];
+				cosfs[j] += cosf(2 * M_PI * symbol_freqs[j] * i / sample_rate) * window_buffer[i];
 			}
 		}
 		for (int j = 0; j < num_symbols(); j++)
@@ -422,7 +422,7 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 static void usage(bool error)
 {
 	fprintf(error ? stderr : stdout,
-		"Usage: %s [-d] [-f FREQ1,FREQ2,...] [-w RECV_WINDOW] -b BAUD\n"
+		"Usage: %s [-d] [-f FREQ1,FREQ2,...] [-s SAMPLE RATE] [-w RECV WINDOW] -b BAUD\n"
 		"       %s -h\n", progname, progname);
 	exit(error ? EXIT_FAILURE : EXIT_SUCCESS);
 }
@@ -442,7 +442,7 @@ int main(int argc, char **argv)
 
 	if (argc > 0)
 		progname = argv[0];
-	while ((opt = getopt(argc, argv, "db:f:w:h")) != -1) {
+	while ((opt = getopt(argc, argv, "db:f:s:w:h")) != -1) {
 		char *end;
 		float freq;
 		int i;
@@ -483,6 +483,16 @@ int main(int argc, char **argv)
 				usage(true);
 			}
 			break;
+		case 's':
+			sample_rate = strtol(optarg, &end, 10);
+			if (*end != '\0')
+				usage(true);
+			if (sample_rate <= 0) {
+				fprintf(stderr, "%s: sample rate must be positive\n",
+					progname);
+				usage(true);
+			}
+			break;
 		case 'w':
 			recv_window_factor = strtof(optarg, &end);
 			if (*end != '\0')
@@ -503,10 +513,10 @@ int main(int argc, char **argv)
 		usage(true);
 	if (debug_mode > 0) {
 		fprintf(stderr,
-			"Sample rate:\t%d Hz\n"
+			"Sample rate:\t%ld Hz\n"
 			"Baud:\t\t%.2f symbols/sec\n"
 			"Window:\t\t%d samples\n",
-			SAMPLE_RATE, baud, receiver_window());
+			sample_rate, baud, receiver_window());
 	}
 
 	if (symbol_width == 0) {
@@ -554,7 +564,7 @@ int main(int argc, char **argv)
 	}
 
 	/* Open a duplex stream and start it. */
-	err = Pa_OpenDefaultStream(&stream, 1, 1, paFloat32, SAMPLE_RATE,
+	err = Pa_OpenDefaultStream(&stream, 1, 1, paFloat32, sample_rate,
 				   paFramesPerBufferUnspecified, sofi_callback,
 				   &data);
 	if (err != paNoError) {
