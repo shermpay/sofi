@@ -250,30 +250,6 @@ static void *sender_start(void *arg)
 	return (void *)(uintptr_t)sender_loop(arg);
 }
 
-static inline int strongest_symbol(const float *fs)
-{
-	int max_symbol = -1;
-	float max_val = 0.f;
-
-	if (debug_mode >= 3)
-		fprintf(stderr, "symbol strengths = [");
-	for (int i = 0; i < num_symbols(); i++) {
-		if (debug_mode >= 3) {
-			if (i > 0)
-				fprintf(stderr, ", ");
-			fprintf(stderr, "%f", fs[i]);
-		}
-		/* XXX: need a real heuristic for silence. */
-		if (fs[i] > 100.f && fs[i] > max_val) {
-			max_val = fs[i];
-			max_symbol = i;
-		}
-	}
-	if (debug_mode >= 3)
-		fprintf(stderr, "] = %d\n", max_symbol);
-	return max_symbol;
-}
-
 static int print_frame(const struct sofi_packet *packet)
 {
 	if (debug_mode < 1) {
@@ -332,10 +308,8 @@ static int receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 	unsigned int symbol_index = 0;
 	struct sofi_packet packet;
 	unsigned offset;
-	float sinfs[1 << 8];
-	float cosfs[1 << 8];
-	float fs[1 << 8];
 	int symbol;
+	float max_strength;
 
 #define RECV_STATE_TRANSITION(new_state) do {	\
 	state = new_state;			\
@@ -345,7 +319,10 @@ static int receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 	while (!(signum = signal_received)) {
 		int window_size;
 
-		window_size = (state == RECV_STATE_LISTENING) ? receiver_window() : (float)sample_rate / baud;
+		if (state == RECV_STATE_LISTENING)
+			window_size = receiver_window();
+		else
+			window_size = (int)((float)sample_rate / baud);
 
 		if (PaUtil_GetRingBufferReadAvailable(buffer) < window_size)
 			continue;
@@ -354,17 +331,28 @@ static int receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 						 window_size);
 		assert(ring_ret == window_size);
 
-		memset(sinfs, 0, sizeof(sinfs));
-		memset(cosfs, 0, sizeof(cosfs));
-		for (int i = 0; i < window_size; i++) {
-			for (int j = 0; j < num_symbols(); j++) {
-				sinfs[j] += sinf(2 * M_PI * symbol_freqs[j] * i / sample_rate) * window_buffer[i];
-				cosfs[j] += cosf(2 * M_PI * symbol_freqs[j] * i / sample_rate) * window_buffer[i];
+		debug_printf(3, "symbol strengths = [");
+		symbol = -1;
+		max_strength = 100.f; /* XXX: need a real heuristic for silence. */
+		for (int i = 0; i < num_symbols(); i++) {
+			float sin_i = 0.f, cos_i = 0.f;
+			float strength;
+
+			for (int j = 0; j < window_size; j++) {
+				sin_i += sinf(2.f * M_PI * symbol_freqs[i] * (float)j / (float)sample_rate) * window_buffer[j];
+				cos_i += cosf(2.f * M_PI * symbol_freqs[i] * (float)j / (float)sample_rate) * window_buffer[j];
 			}
+			strength = sin_i * sin_i + cos_i * cos_i;
+			if (strength > max_strength) {
+				max_strength = strength;
+				symbol = i;
+			}
+
+			if (i > 0)
+				debug_printf(3, ", ");
+			debug_printf(3, "%f", strength);
 		}
-		for (int j = 0; j < num_symbols(); j++)
-			fs[j] = sinfs[j] * sinfs[j] + cosfs[j] * cosfs[j];
-		symbol = strongest_symbol(fs);
+		debug_printf(3, "] = %d\n", symbol);
 
 		switch (state) {
 		case RECV_STATE_LISTENING:
