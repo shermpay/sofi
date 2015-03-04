@@ -125,8 +125,8 @@ struct callback_data {
 };
 
 static void sender_callback(void *output_buffer,
-			   unsigned long frames_per_buffer,
-			   struct callback_data *data)
+			    unsigned long frames_per_buffer,
+			    struct callback_data *data)
 {
 	ring_buffer_size_t ret;
 	float *out = output_buffer;
@@ -191,8 +191,8 @@ static void sender_callback(void *output_buffer,
 }
 
 static void receiver_callback(const void *input_buffer,
-			     unsigned long frames_per_buffer,
-			     struct callback_data *data)
+			      unsigned long frames_per_buffer,
+			      struct callback_data *data)
 {
 	ring_buffer_size_t ret;
 	if (data->sender.state == SEND_STATE_IDLE) {
@@ -307,7 +307,7 @@ static int receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 	char byte = 0;
 	unsigned int symbol_index = 0;
 	struct sofi_packet packet;
-	unsigned offset;
+	unsigned offset = 0;
 	int symbol;
 	float max_strength;
 
@@ -417,7 +417,8 @@ int main(int argc, char **argv)
 	pthread_t sender_thread;
 	int ret;
 	int opt;
-	int sender = 0, receiver = 0;
+	PaStreamParameters input_params, output_params;
+	bool sender = false, receiver = false;
 
 	if (argc > 0)
 		progname = argv[0];
@@ -428,10 +429,10 @@ int main(int argc, char **argv)
 
 		switch (opt) {
 		case 'R':
-			receiver = 1;
+			receiver = true;
 			break;
 		case 'S':
-			sender = 1;
+			sender = true;
 			break;
 		case 'b':
 			baud = strtof(optarg, &end);
@@ -502,7 +503,7 @@ int main(int argc, char **argv)
 	if (!baud)
 		usage(true);
 	if (!sender && !receiver)
-		sender = receiver = 1;
+		sender = receiver = true;
 	if (debug_mode > 0) {
 		fprintf(stderr,
 			"Sample rate:\t%ld Hz\n"
@@ -568,17 +569,36 @@ int main(int argc, char **argv)
 		goto out;
 	}
 
+	/* Pick the parameters for the stream. */
+	if (receiver) {
+		input_params.device = Pa_GetDefaultInputDevice();
+		input_params.channelCount = 1;
+		input_params.sampleFormat = paFloat32;
+		input_params.suggestedLatency =
+			Pa_GetDeviceInfo(input_params.device)->defaultLowInputLatency;
+		input_params.hostApiSpecificStreamInfo = NULL;
+	}
+	if (sender) {
+		output_params.device = Pa_GetDefaultOutputDevice();
+		output_params.channelCount = 1;
+		output_params.sampleFormat = paFloat32;
+		output_params.suggestedLatency =
+			Pa_GetDeviceInfo(output_params.device)->defaultLowOutputLatency;
+		output_params.hostApiSpecificStreamInfo = NULL;
+	}
+
 	/* Open a stream and start it. */
-	err = Pa_OpenDefaultStream(&stream, receiver, sender, paFloat32,
-				   sample_rate, paFramesPerBufferUnspecified,
-				   sofi_callback, &data);
+	err = Pa_OpenStream(&stream,
+			    receiver ? &input_params : NULL,
+			    sender ? &output_params : NULL,
+			    sample_rate, paFramesPerBufferUnspecified,
+			    paClipOff, sofi_callback, &data);
 	if (err != paNoError) {
 		fprintf(stderr, "PortAudio: opening stream failed: %s\n",
 			Pa_GetErrorText(err));
 		status = EXIT_FAILURE;
 		goto terminate;
 	}
-
 	err = Pa_StartStream(stream);
 	if (err != paNoError) {
 		fprintf(stderr, "PortAudio: starting stream failed: %s\n",
