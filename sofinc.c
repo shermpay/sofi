@@ -40,11 +40,11 @@ static void signal_handler(int signum)
 
 /* Transmission parameters. */
 #define SENDER_BUFFER_SIZE (1 << 12)	/* 4K characters. */
-#define RECEIVER_BUFFER_SIZE (1 << 12)	/* 4K samples. */
+#define RECEIVER_BUFFER_SIZE (1 << 20)	/* 1M samples. */
 
 static long sample_rate = 44100;
 static float baud;
-static float recv_window_factor = 0.1f;
+static float recv_window_factor = 0.2f;
 
 static inline int receiver_window(void)
 {
@@ -59,7 +59,7 @@ static inline float interpacket_gap(void)
 /* Symbol definitions. */
 
 /* Size of a symbol in bits. XXX: (must be 1, 2, 4, or 8). */
-static int symbol_width;
+static int symbol_width = 1;
 
 static inline int num_symbols(void)
 {
@@ -72,7 +72,7 @@ static inline unsigned int symbols_per_byte(void)
 }
 
 /* Frequencies in Hz for each symbol value. */
-static float symbol_freqs[1 << 8];
+static float symbol_freqs[1 << 8] = {2200.f, 1200.f};
 
 static inline unsigned int symbol_from_byte(unsigned char c, unsigned int i)
 {
@@ -103,11 +103,6 @@ enum receiver_state {
 	RECV_STATE_LISTENING,
 	RECV_STATE_LENGTH_GATHER,
 	RECV_STATE_PAYLOAD_GATHER,
-};
-
-struct symbol_counts {
-	unsigned int symbols[1 << 8];
-	unsigned int silence;
 };
 
 struct callback_data {
@@ -239,43 +234,35 @@ static inline int strongest_symbol(const float *fs)
 	int max_symbol = -1;
 	float max_val = 0.f;
 
+	if (debug_mode >= 3)
+		fprintf(stderr, "symbol strengths = [");
 	for (int i = 0; i < num_symbols(); i++) {
+		if (debug_mode >= 3) {
+			if (i > 0)
+				fprintf(stderr, ", ");
+			fprintf(stderr, "%f", fs[i]);
+		}
 		/* XXX: need a real heuristic for silence. */
 		if (fs[i] > 100.f && fs[i] > max_val) {
 			max_val = fs[i];
 			max_symbol = i;
 		}
 	}
+	if (debug_mode >= 3)
+		fprintf(stderr, "] = %d\n", max_symbol);
 	return max_symbol;
-}
-
-/* XXX: convert window to frame to time in seconds. */
-static inline float window_to_seconds(int window)
-{
-	return (float)window * (float)receiver_window() / (float)sample_rate;
-}
-
-static inline int calc_mostly(struct symbol_counts *counts)
-{
-	int max = -1;
-	unsigned int max_count = counts->silence;
-
-	for (int i = 0; i < num_symbols(); i++) {
-		if (counts->symbols[i] > max_count) {
-			max_count = counts->symbols[i];
-			max = i;
-		}
-	}
-	return max;
 }
 
 static void print_frame(const struct sofi_packet *packet)
 {
 	if (debug_mode < 1) {
 		fwrite(packet->payload, 1, packet->len, stdout);
+		fflush(stdout);
 		return;
 	}
 
+	if (packet->len == 0 && debug_mode < 2)
+		return;
 	printf("sofi_frame = {\n");
 	printf("\t.len = %" PRIu8 "\n", packet->len);
 	printf("\t.payload = \"");
@@ -316,13 +303,7 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 {
 	ring_buffer_size_t ring_ret;
 	int signum;
-	int window = 0;
 	enum receiver_state state = RECV_STATE_LISTENING;
-	float t0;
-	float wait_until;
-	int prev = -1;
-	int n;
-	struct symbol_counts counts;
 	char byte = 0;
 	unsigned int symbol_index = 0;
 	struct sofi_packet packet;
@@ -330,7 +311,6 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 	float sinfs[1 << 8];
 	float cosfs[1 << 8];
 	float fs[1 << 8];
-	float time;
 	int symbol;
 
 #define RECV_STATE_TRANSITION(new_state) do {	\
@@ -339,18 +319,20 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 } while(0)
 
 	while (!(signum = signal_received)) {
-		if (PaUtil_GetRingBufferReadAvailable(buffer) < receiver_window())
+		int window_size;
+
+		window_size = (state == RECV_STATE_LISTENING) ? receiver_window() : (float)sample_rate / baud;
+
+		if (PaUtil_GetRingBufferReadAvailable(buffer) < window_size)
 			continue;
 
-		time = window_to_seconds(window++);
-
 		ring_ret = PaUtil_ReadRingBuffer(buffer, window_buffer,
-						 receiver_window());
-		assert(ring_ret == receiver_window());
+						 window_size);
+		assert(ring_ret == window_size);
 
 		memset(sinfs, 0, sizeof(sinfs));
 		memset(cosfs, 0, sizeof(cosfs));
-		for (int i = 0; i < receiver_window(); i++) {
+		for (int i = 0; i < window_size; i++) {
 			for (int j = 0; j < num_symbols(); j++) {
 				sinfs[j] += sinf(2 * M_PI * symbol_freqs[j] * i / sample_rate) * window_buffer[i];
 				cosfs[j] += cosf(2 * M_PI * symbol_freqs[j] * i / sample_rate) * window_buffer[i];
@@ -362,58 +344,38 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 
 		switch (state) {
 		case RECV_STATE_LISTENING:
-			if (symbol != prev) {
-				t0 = time;
+			if (symbol != -1) {
 				packet.len = 0;
 				offset = 0;
-				n = 0;
 				byte = 0;
 				symbol_index = 0;
-				wait_until = t0 + ((n + 1) / baud);
-				memset(&counts, 0, sizeof(counts));
 				RECV_STATE_TRANSITION(RECV_STATE_LENGTH_GATHER);
 			}
 			break;
 		case RECV_STATE_LENGTH_GATHER:
 		case RECV_STATE_PAYLOAD_GATHER:
-			if (time >= wait_until) {
-				int mostly;
+			if (symbol == -1) {
+				memset(packet.payload + offset, 0, packet.len - offset);
+				print_frame(&packet);
+				RECV_STATE_TRANSITION(RECV_STATE_LISTENING);
+				break;
+			}
 
-				mostly = calc_mostly(&counts);
-				memset(&counts, 0, sizeof(counts));
-				if (mostly == -1) {
-					memset(packet.payload + offset, 0, packet.len - offset);
-					print_frame(&packet);
-					RECV_STATE_TRANSITION(RECV_STATE_LISTENING);
-					break;
+			byte |= bits_from_symbol(symbol, symbol_index++);
+			if (symbol_index >= symbols_per_byte()) {
+				if (state == RECV_STATE_LENGTH_GATHER) {
+					packet.len = (uint8_t)byte;
+					RECV_STATE_TRANSITION(RECV_STATE_PAYLOAD_GATHER);
+				} else if (state == RECV_STATE_PAYLOAD_GATHER) {
+					if (offset < packet.len &&
+					    offset < MAX_PACKET_LENGTH)
+						packet.payload[offset++] = byte;
 				}
-
-				n++;
-				wait_until = t0 + ((n + 1) / baud);
-
-				byte |= bits_from_symbol(mostly, symbol_index++);
-				if (symbol_index >= symbols_per_byte()) {
-					if (state == RECV_STATE_LENGTH_GATHER) {
-						packet.len = (uint8_t)byte;
-						RECV_STATE_TRANSITION(RECV_STATE_PAYLOAD_GATHER);
-					} else if (state == RECV_STATE_PAYLOAD_GATHER) {
-						if (offset < packet.len &&
-						    offset < MAX_PACKET_LENGTH)
-							packet.payload[offset++] = byte;
-					}
-					byte = 0;
-					symbol_index = 0;
-				}
-			} else {
-				if (symbol == -1)
-					counts.silence++;
-				else
-					counts.symbols[symbol]++;
+				byte = 0;
+				symbol_index = 0;
 			}
 			break;
 		}
-
-		prev = symbol;
 	}
 
 	fprintf(stderr, "got %d; exiting\n", signum);
@@ -452,6 +414,11 @@ int main(int argc, char **argv)
 			baud = strtof(optarg, &end);
 			if (*end != '\0')
 				usage(true);
+			if (baud < 1.f) {
+				fprintf(stderr, "%s: baud must be >=1\n",
+					progname);
+				usage(true);
+			}
 			break;
 		case 'd':
 			debug_mode++;
@@ -509,20 +476,23 @@ int main(int argc, char **argv)
 			usage(true);
 		}
 	}
-	if (baud < 1.f)
+	if (!baud)
 		usage(true);
 	if (debug_mode > 0) {
 		fprintf(stderr,
 			"Sample rate:\t%ld Hz\n"
-			"Baud:\t\t%.2f symbols/sec\n"
-			"Window:\t\t%d samples\n",
-			sample_rate, baud, receiver_window());
-	}
-
-	if (symbol_width == 0) {
-		symbol_width = 1;
-		symbol_freqs[0] = 2200.f;
-		symbol_freqs[1] = 1200.f;
+			"Baud:\t\t%.2f symbols/sec, %d samples, %.2f seconds\n"
+			"Window:\t\t%d samples, %.2f seconds\n",
+			sample_rate,
+			baud, (int)((float)sample_rate / baud), 1.f / baud,
+			receiver_window(), receiver_window() / (float)sample_rate);
+		fprintf(stderr, "Frequencies:\t");
+		for (int i = 0; i < num_symbols(); i++) {
+			if (i > 0)
+				fprintf(stderr, ", ");
+			fprintf(stderr, "%.2f Hz", symbol_freqs[i]);
+		}
+		fprintf(stderr, "\n");
 	}
 
 	/* Initialize callback data and receiver window buffer. */
@@ -540,9 +510,9 @@ int main(int argc, char **argv)
 	data.sender.phase = 0.f;
         data.sender.state = SEND_STATE_IDLE;
 
-	window_buffer = calloc(receiver_window(), sizeof(float));
+	window_buffer = malloc(RECEIVER_BUFFER_SIZE * sizeof(float));
 	if (!window_buffer) {
-		perror("calloc");
+		perror("malloc");
 		status = EXIT_FAILURE;
 		goto out;
 	}
