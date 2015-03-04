@@ -124,21 +124,16 @@ struct callback_data {
 	} receiver;
 };
 
-static int sofi_callback(const void *input_buffer, void *output_buffer,
-			 unsigned long frames_per_buffer,
-			 const PaStreamCallbackTimeInfo *time_info,
-			 PaStreamCallbackFlags status_flags, void *arg)
+static void sender_callback(void *output_buffer,
+			   unsigned long frames_per_buffer,
+			   struct callback_data *data)
 {
 	ring_buffer_size_t ret;
 	float *out = output_buffer;
-	struct callback_data *data = arg;
 	float frequency;
 	void *data1, *data2;
 	ring_buffer_size_t size1, size2;
 	bool first = false;
-
-	(void)time_info;
-	(void)status_flags;
 
 	for (unsigned long i = 0; i < frames_per_buffer; i++) {
 		switch (data->sender.state) {
@@ -193,13 +188,34 @@ static int sofi_callback(const void *input_buffer, void *output_buffer,
 			break;
 		}
 	}
+}
 
+static void receiver_callback(const void *input_buffer,
+			     unsigned long frames_per_buffer,
+			     struct callback_data *data)
+{
+	ring_buffer_size_t ret;
 	if (data->sender.state == SEND_STATE_IDLE) {
 		ret = PaUtil_GetRingBufferWriteAvailable(&data->receiver.buffer);
 		assert((unsigned long)ret >= frames_per_buffer);
 		ret = PaUtil_WriteRingBuffer(&data->receiver.buffer, input_buffer, frames_per_buffer);
 		assert((unsigned long)ret == frames_per_buffer);
 	}
+}
+
+static int sofi_callback(const void *input_buffer, void *output_buffer,
+			 unsigned long frames_per_buffer,
+			 const PaStreamCallbackTimeInfo *time_info,
+			 PaStreamCallbackFlags status_flags, void *arg)
+{
+
+	(void)time_info;
+	(void)status_flags;
+
+	if (output_buffer)
+		sender_callback(output_buffer, frames_per_buffer, arg);
+	if (input_buffer)
+		receiver_callback(input_buffer, frames_per_buffer, arg);
 
 	return paContinue;
 }
@@ -212,7 +228,7 @@ static void sender_loop(PaUtilRingBuffer *buffer)
 	for (;;) {
 		c = getc(stdin);
 		if (c == EOF) {
-			if ((errno = ferror(stdin))) {
+			if (ferror(stdin)) {
 				perror("getc");
 				break;
 			}
@@ -384,7 +400,7 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 static void usage(bool error)
 {
 	fprintf(error ? stderr : stdout,
-		"Usage: %s [-d] [-f FREQ1,FREQ2,...] [-s SAMPLE RATE] [-w RECV WINDOW] -b BAUD\n"
+		"Usage: %s [-d] [-RS] [-f FREQ1,FREQ2,...] [-s SAMPLE RATE] [-w RECV WINDOW] -b BAUD\n"
 		"       %s -h\n", progname, progname);
 	exit(error ? EXIT_FAILURE : EXIT_SUCCESS);
 }
@@ -401,15 +417,22 @@ int main(int argc, char **argv)
 	pthread_t sender_thread;
 	int ret;
 	int opt;
+	int sender = 0, receiver = 0;
 
 	if (argc > 0)
 		progname = argv[0];
-	while ((opt = getopt(argc, argv, "db:f:s:w:h")) != -1) {
+	while ((opt = getopt(argc, argv, "RSb:df:s:w:h")) != -1) {
 		char *end;
 		float freq;
 		int i;
 
 		switch (opt) {
+		case 'R':
+			receiver = 1;
+			break;
+		case 'S':
+			sender = 1;
+			break;
 		case 'b':
 			baud = strtof(optarg, &end);
 			if (*end != '\0')
@@ -478,6 +501,8 @@ int main(int argc, char **argv)
 	}
 	if (!baud)
 		usage(true);
+	if (!sender && !receiver)
+		sender = receiver = 1;
 	if (debug_mode > 0) {
 		fprintf(stderr,
 			"Sample rate:\t%ld Hz\n"
@@ -496,26 +521,36 @@ int main(int argc, char **argv)
 	}
 
 	/* Initialize callback data and receiver window buffer. */
-	sender_buffer_ptr = malloc(SENDER_BUFFER_SIZE);
-	receiver_buffer_ptr = malloc(RECEIVER_BUFFER_SIZE * sizeof(float));
-	if (!sender_buffer_ptr || !receiver_buffer_ptr) {
-		perror("malloc");
-		status = EXIT_FAILURE;
-		goto out;
+	if (sender) {
+		sender_buffer_ptr = malloc(SENDER_BUFFER_SIZE);
+		if (!sender_buffer_ptr) {
+			perror("malloc");
+			status = EXIT_FAILURE;
+			goto out;
+		}
+		PaUtil_InitializeRingBuffer(&data.sender.buffer, 1,
+					    SENDER_BUFFER_SIZE,
+					    sender_buffer_ptr);
+		data.sender.phase = 0.f;
 	}
-	PaUtil_InitializeRingBuffer(&data.sender.buffer, 1, SENDER_BUFFER_SIZE,
-				    sender_buffer_ptr);
-	PaUtil_InitializeRingBuffer(&data.receiver.buffer, sizeof(float),
-				    RECEIVER_BUFFER_SIZE, receiver_buffer_ptr);
-	data.sender.phase = 0.f;
-        data.sender.state = SEND_STATE_IDLE;
-
-	window_buffer = malloc(RECEIVER_BUFFER_SIZE * sizeof(float));
-	if (!window_buffer) {
-		perror("malloc");
-		status = EXIT_FAILURE;
-		goto out;
+	if (receiver) {
+		receiver_buffer_ptr = malloc(RECEIVER_BUFFER_SIZE * sizeof(float));
+		if (!receiver_buffer_ptr) {
+			perror("malloc");
+			status = EXIT_FAILURE;
+			goto out;
+		}
+		PaUtil_InitializeRingBuffer(&data.receiver.buffer,
+					    sizeof(float), RECEIVER_BUFFER_SIZE,
+					    receiver_buffer_ptr);
+		window_buffer = malloc(RECEIVER_BUFFER_SIZE * sizeof(float));
+		if (!window_buffer) {
+			perror("malloc");
+			status = EXIT_FAILURE;
+			goto out;
+		}
 	}
+	data.sender.state = SEND_STATE_IDLE;
 
 	/* Handle signals. */
 	if (signal(SIGINT, signal_handler) == SIG_ERR) {
@@ -533,10 +568,10 @@ int main(int argc, char **argv)
 		goto out;
 	}
 
-	/* Open a duplex stream and start it. */
-	err = Pa_OpenDefaultStream(&stream, 1, 1, paFloat32, sample_rate,
-				   paFramesPerBufferUnspecified, sofi_callback,
-				   &data);
+	/* Open a stream and start it. */
+	err = Pa_OpenDefaultStream(&stream, receiver, sender, paFloat32,
+				   sample_rate, paFramesPerBufferUnspecified,
+				   sofi_callback, &data);
 	if (err != paNoError) {
 		fprintf(stderr, "PortAudio: opening stream failed: %s\n",
 			Pa_GetErrorText(err));
@@ -549,19 +584,27 @@ int main(int argc, char **argv)
 		fprintf(stderr, "PortAudio: starting stream failed: %s\n",
 			Pa_GetErrorText(err));
 		status = EXIT_FAILURE;
-		goto stop_stream;
-	}
-
-	ret = pthread_create(&sender_thread, NULL, sender_start,
-			     &data.sender.buffer);
-	if (ret) {
-		errno = ret;
-		perror("pthread_create");
-		status = EXIT_FAILURE;
 		goto close_stream;
 	}
-	receiver_loop(&data.receiver.buffer, window_buffer);
-	pthread_cancel(sender_thread);
+
+	/* Run the sender and/or receiver. */
+	if (sender && receiver) {
+		ret = pthread_create(&sender_thread, NULL, sender_start,
+				     &data.sender.buffer);
+		if (ret) {
+			errno = ret;
+			perror("pthread_create");
+			status = EXIT_FAILURE;
+			goto stop_stream;
+		}
+		receiver_loop(&data.receiver.buffer, window_buffer);
+		pthread_cancel(sender_thread);
+		pthread_join(sender_thread, NULL);
+	} else if (sender) {
+		sender_loop(&data.sender.buffer);
+	} else if (receiver) {
+		receiver_loop(&data.receiver.buffer, window_buffer);
+	}
 
 	/* Cleanup. */
 stop_stream:
