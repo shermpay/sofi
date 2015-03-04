@@ -220,7 +220,7 @@ static int sofi_callback(const void *input_buffer, void *output_buffer,
 	return paContinue;
 }
 
-static void sender_loop(PaUtilRingBuffer *buffer)
+static int sender_loop(PaUtilRingBuffer *buffer)
 {
 	ring_buffer_size_t ring_ret;
 	char c;
@@ -228,11 +228,11 @@ static void sender_loop(PaUtilRingBuffer *buffer)
 	for (;;) {
 		c = getc(stdin);
 		if (c == EOF) {
-			if (ferror(stdin)) {
+			if (ferror(stdin) && errno != EINTR) {
 				perror("getc");
-				break;
+				return -1;
 			}
-			continue;
+			return 0;
 		}
 		ring_ret = PaUtil_WriteRingBuffer(buffer, &c, 1);
 		assert(ring_ret == 1); /* XXX */
@@ -241,8 +241,7 @@ static void sender_loop(PaUtilRingBuffer *buffer)
 
 static void *sender_start(void *arg)
 {
-	sender_loop(arg);
-	return NULL;
+	return (void *)(uintptr_t)sender_loop(arg);
 }
 
 static inline int strongest_symbol(const float *fs)
@@ -589,6 +588,7 @@ int main(int argc, char **argv)
 
 	/* Run the sender and/or receiver. */
 	if (sender && receiver) {
+		void *retval;
 		ret = pthread_create(&sender_thread, NULL, sender_start,
 				     &data.sender.buffer);
 		if (ret) {
@@ -599,9 +599,13 @@ int main(int argc, char **argv)
 		}
 		receiver_loop(&data.receiver.buffer, window_buffer);
 		pthread_cancel(sender_thread);
-		pthread_join(sender_thread, NULL);
+		pthread_join(sender_thread, &retval);
+		if (retval)
+			status = EXIT_FAILURE;
 	} else if (sender) {
-		sender_loop(&data.sender.buffer);
+		ret = sender_loop(&data.sender.buffer);
+		if (ret)
+			status = EXIT_FAILURE;
 	} else if (receiver) {
 		receiver_loop(&data.receiver.buffer, window_buffer);
 	}
