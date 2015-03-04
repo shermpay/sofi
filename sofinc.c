@@ -268,53 +268,56 @@ static inline int strongest_symbol(const float *fs)
 	return max_symbol;
 }
 
-static void print_frame(const struct sofi_packet *packet)
+static int print_frame(const struct sofi_packet *packet)
 {
 	if (debug_mode < 1) {
 		fwrite(packet->payload, 1, packet->len, stdout);
-		fflush(stdout);
-		return;
-	}
-
-	if (packet->len == 0 && debug_mode < 2)
-		return;
-	printf("sofi_frame = {\n");
-	printf("\t.len = %" PRIu8 "\n", packet->len);
-	printf("\t.payload = \"");
-	for (unsigned i = 0; i < packet->len; i++) {
-		char c = packet->payload[i];
-		switch (c) {
-		case '\"':
-			fputs("\\\"", stdout);
-			break;
-		case '\\':
-			fputs("\\\\", stdout);
-			break;
-		case '\a':
-			fputs("\\a", stdout);
-			break;
-		case '\b':
-			fputs("\\b", stdout);
-			break;
-		case '\n':
-			fputs("\\n", stdout);
-			break;
-		case '\t':
-			fputs("\\t", stdout);
-			break;
-		default:
-			if (isprint(c))
-				fputc(c, stdout);
-			else
-				printf("\\%03o", (unsigned char)c);
+	} else {
+		if (packet->len == 0 && debug_mode < 2)
+			return 0;
+		printf("sofi_frame = {\n");
+		printf("\t.len = %" PRIu8 "\n", packet->len);
+		printf("\t.payload = \"");
+		for (unsigned i = 0; i < packet->len; i++) {
+			char c = packet->payload[i];
+			switch (c) {
+			case '\"':
+				fputs("\\\"", stdout);
+				break;
+			case '\\':
+				fputs("\\\\", stdout);
+				break;
+			case '\a':
+				fputs("\\a", stdout);
+				break;
+			case '\b':
+				fputs("\\b", stdout);
+				break;
+			case '\n':
+				fputs("\\n", stdout);
+				break;
+			case '\t':
+				fputs("\\t", stdout);
+				break;
+			default:
+				if (isprint(c))
+					fputc(c, stdout);
+				else
+					printf("\\%03o", (unsigned char)c);
+			}
 		}
+		printf("\"\n");
+		printf("}\n");
 	}
-	printf("\"\n");
-	printf("}\n");
 	fflush(stdout);
+	if (ferror(stdout)) {
+		perror("fflush");
+		return -1;
+	}
+	return 0;
 }
 
-static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
+static int receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 {
 	ring_buffer_size_t ring_ret;
 	int signum;
@@ -371,7 +374,8 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 		case RECV_STATE_PAYLOAD_GATHER:
 			if (symbol == -1) {
 				memset(packet.payload + offset, 0, packet.len - offset);
-				print_frame(&packet);
+				if (print_frame(&packet))
+					return -1;
 				RECV_STATE_TRANSITION(RECV_STATE_LISTENING);
 				break;
 			}
@@ -394,6 +398,7 @@ static void receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 	}
 
 	fprintf(stderr, "got %d; exiting\n", signum);
+	return 0;
 }
 
 static void usage(bool error)
@@ -597,7 +602,9 @@ int main(int argc, char **argv)
 			status = EXIT_FAILURE;
 			goto stop_stream;
 		}
-		receiver_loop(&data.receiver.buffer, window_buffer);
+		ret = receiver_loop(&data.receiver.buffer, window_buffer);
+		if (ret)
+			status = EXIT_FAILURE;
 		pthread_cancel(sender_thread);
 		pthread_join(sender_thread, &retval);
 		if (retval)
@@ -607,7 +614,9 @@ int main(int argc, char **argv)
 		if (ret)
 			status = EXIT_FAILURE;
 	} else if (receiver) {
-		receiver_loop(&data.receiver.buffer, window_buffer);
+		ret = receiver_loop(&data.receiver.buffer, window_buffer);
+		if (ret)
+			status = EXIT_FAILURE;
 	}
 
 	/* Cleanup. */
