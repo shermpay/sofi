@@ -235,8 +235,10 @@ static int sender_loop(PaUtilRingBuffer *buffer)
 			}
 			break;
 		}
+		while (PaUtil_GetRingBufferWriteAvailable(buffer) < 1)
+			Pa_Sleep(CHAR_BIT * 1000.f / baud);
 		ring_ret = PaUtil_WriteRingBuffer(buffer, &c, 1);
-		assert(ring_ret == 1); /* XXX */
+		assert(ring_ret == 1);
 	}
 
 	/* Wait for any outstanding output to be sent. */
