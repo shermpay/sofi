@@ -224,19 +224,25 @@ static int sender_loop(PaUtilRingBuffer *buffer)
 {
 	ring_buffer_size_t ring_ret;
 	char c;
+	int ret = 0;
 
 	for (;;) {
 		c = getc(stdin);
 		if (c == EOF) {
 			if (ferror(stdin) && errno != EINTR) {
 				perror("getc");
-				return -1;
+				ret = -1;
 			}
-			return 0;
+			break;
 		}
 		ring_ret = PaUtil_WriteRingBuffer(buffer, &c, 1);
 		assert(ring_ret == 1); /* XXX */
 	}
+
+	/* Wait for any outstanding output to be sent. */
+	while (PaUtil_GetRingBufferReadAvailable(buffer) > 0)
+		Pa_Sleep(100);
+	return ret;
 }
 
 static void *sender_start(void *arg)
