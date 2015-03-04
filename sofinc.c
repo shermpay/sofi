@@ -324,8 +324,10 @@ static int receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 		else
 			window_size = (int)((float)sample_rate / baud);
 
-		if (PaUtil_GetRingBufferReadAvailable(buffer) < window_size)
+		if (PaUtil_GetRingBufferReadAvailable(buffer) < window_size) {
+			Pa_Sleep(1000 * window_size / sample_rate);
 			continue;
+		}
 
 		ring_ret = PaUtil_ReadRingBuffer(buffer, window_buffer,
 						 window_size);
