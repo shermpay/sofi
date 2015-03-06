@@ -20,12 +20,12 @@
 
 static const char *progname = "sofinc";
 
-static int debug_mode;
+static int debug_level;
 void debug_printf(int v, const char *format, ...)
 {
 	va_list ap;
 
-	if (debug_mode >= v) {
+	if (debug_level >= v) {
 		va_start(ap, format);
 		vfprintf(stderr, format, ap);
 		va_end(ap);
@@ -42,8 +42,8 @@ static void signal_handler(int signum)
 #define SENDER_BUFFER_SIZE (1 << 12)	/* 4K characters. */
 #define RECEIVER_BUFFER_SIZE (1 << 20)	/* 1M samples. */
 
-static long sample_rate = 44100;
-static float baud;
+static long sample_rate = 192000L;
+static float baud = 1000.f;
 static float recv_window_factor = 0.2f;
 
 static inline int receiver_window(void)
@@ -254,10 +254,10 @@ static void *sender_start(void *arg)
 
 static int print_frame(const struct sofi_packet *packet)
 {
-	if (debug_mode < 1) {
+	if (debug_level < 1) {
 		fwrite(packet->payload, 1, packet->len, stdout);
 	} else {
-		if (packet->len == 0 && debug_mode < 2)
+		if (packet->len == 0 && debug_level < 2)
 			return 0;
 		printf("sofi_frame = {\n");
 		printf("\t.len = %" PRIu8 "\n", packet->len);
@@ -402,8 +402,31 @@ static int receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 static void usage(bool error)
 {
 	fprintf(error ? stderr : stdout,
-		"Usage: %s [-d] [-RS] [-f FREQ1,FREQ2,...] [-s SAMPLE RATE] [-w RECV WINDOW] -b BAUD\n"
-		"       %s -h\n", progname, progname);
+		"Usage: %s [OPTION]...\n"
+		"Transmit data over sound, reading from standard input and writing to standard\n"
+		"output.\n"
+		"\n"
+		"Communication direction:\n"
+		"  -R, --receiver                     run the receiver (enabled by default unless\n"
+		"                                     --sender is given)\n"
+		"  -S, --sender                       run the sender (enabled by default unless\n"
+		"                                     --receiver is given)\n"
+		"\n"
+		"Transmission parameters:\n"
+		"  -s, --sample-rate=SAMPLE_RATE      set up the streams at SAMPLE_RATE\n"
+		"  -f, --frequencies=FREQ0,FREQ1,...  use the given frequencies for symbols,\n"
+		"                                     with 2, 4, 16, or 256 frequencies for a\n"
+		"                                     symbol width of 1, 2, 4, or 8, respectively\n"
+		"  -w, --window=WINDOW_FACTOR         use a window of size WINDOW_FACTOR times\n"
+		"                                     the symbol duration time to detect a carrier\n"
+		"                                     wave\n"
+		"  -b, --baud=BAUD                    run at BAUD symbols per second\n"
+		"\n"
+		"Miscellaneous:\n"
+		"  -d                                 increase the debug level by one\n"
+		"  --debug-level=DEBUG_LEVEL          set the debug level to DEBUG_LEVEL\n"
+		"  -h, --help                         display this help text and exit\n"
+		, progname);
 	exit(error ? EXIT_FAILURE : EXIT_SUCCESS);
 }
 
@@ -418,16 +441,32 @@ int main(int argc, char **argv)
 	float *window_buffer = NULL;
 	pthread_t sender_thread;
 	int ret;
-	int opt;
 	PaStreamParameters input_params, output_params;
 	bool sender = false, receiver = false;
 
 	if (argc > 0)
 		progname = argv[0];
-	while ((opt = getopt(argc, argv, "RSb:df:s:w:h")) != -1) {
+	for (;;) {
+		static struct option longopts[] = {
+			{"receiver",	no_argument,		NULL,	'R'},
+			{"sender",	no_argument,		NULL,	'S'},
+			{"sample-rate",	required_argument,	NULL,	's'},
+			{"frequencies",	required_argument,	NULL,	'f'},
+			{"window",	required_argument,	NULL,	'w'},
+			{"baud",	required_argument,	NULL,	'b'},
+			{"debug-level",	required_argument,	NULL,	'd'},
+			{"help",	no_argument,		NULL,	'h'},
+		};
+		int opt;
+		int longindex;
 		char *end;
 		float freq;
 		int i;
+
+		opt = getopt_long(argc, argv, "RSb:f:s:w:dh",
+				  longopts, &longindex);
+		if (opt == -1)
+			break;
 
 		switch (opt) {
 		case 'R':
@@ -445,9 +484,6 @@ int main(int argc, char **argv)
 					progname);
 				usage(true);
 			}
-			break;
-		case 'd':
-			debug_mode++;
 			break;
 		case 'f':
 			for (i = 0; i < 256; i++) {
@@ -496,17 +532,21 @@ int main(int argc, char **argv)
 				usage(true);
 			}
 			break;
+		case 'd':
+			if (optarg)
+				debug_level = atoi(optarg);
+			else
+				debug_level++;
+			break;
 		case 'h':
 			usage(false);
 		default:
 			usage(true);
 		}
 	}
-	if (!baud)
-		usage(true);
 	if (!sender && !receiver)
 		sender = receiver = true;
-	if (debug_mode > 0) {
+	if (debug_level > 0) {
 		fprintf(stderr,
 			"Sample rate:\t%ld Hz\n"
 			"Baud:\t\t%.2f symbols/sec, %d samples, %.2f seconds\n"
