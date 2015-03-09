@@ -44,7 +44,7 @@ static void signal_handler(int signum)
 #define RECEIVER_BUFFER_SIZE (1UL << 20) /* 1M samples. */
 
 static long sample_rate = 192000L;
-static float baud = 1000.f;
+static float baud = 1200.f;
 static float recv_window_factor = 0.2f;
 
 static inline int receiver_window(void)
@@ -63,7 +63,7 @@ static inline float interpacket_gap(void)
 static int symbol_width = 1;
 
 /* Frequencies in Hz for each symbol value. */
-static float symbol_freqs[1 << 8] = {2200.f, 1200.f};
+static float symbol_freqs[1 << 8] = {2400.f, 1200.f};
 
 static inline int num_symbols(void)
 {
@@ -147,7 +147,6 @@ static void sender_callback(void *output_buffer,
 		case SEND_STATE_TRANSMITTING:
 			if (first || ++data->frame >= sample_rate / baud) {
 				if (data->index >= data->msg->len) {
-					PaUtil_AdvanceRingBufferReadIndex(&data->buffer, 1);
 					data->state = SEND_STATE_INTERPACKET_GAP;
 					data->frame = 0;
 					out[i] = 0.f;
@@ -166,8 +165,10 @@ static void sender_callback(void *output_buffer,
 			break;
 		case SEND_STATE_INTERPACKET_GAP:
 			out[i] = 0.f;
-			if (++data->frame >= interpacket_gap() * sample_rate)
+			if (++data->frame >= interpacket_gap() * sample_rate) {
+				PaUtil_AdvanceRingBufferReadIndex(&data->buffer, 1);
 				data->state = SEND_STATE_IDLE;
+			}
 			break;
 		}
 	}
