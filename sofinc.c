@@ -225,9 +225,13 @@ static int sender_loop(PaUtilRingBuffer *buffer)
 			Pa_Sleep(CHAR_BIT * 1000.f / baud);
 	}
 
-	/* Wait for any outstanding output to be sent. */
+	/*
+	 * Wait for any outstanding output to be sent, plus a little extra
+	 * because either PortAudio or ALSA can't be trusted.
+	 */
 	while (PaUtil_GetRingBufferReadAvailable(buffer) > 0)
 		Pa_Sleep(CHAR_BIT * 1000.f / baud);
+	Pa_Sleep(100);
 
 	if (ferror(stdin) && errno != EINTR) {
 		perror("fread");
