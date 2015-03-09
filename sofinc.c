@@ -62,6 +62,9 @@ static inline float interpacket_gap(void)
 /* Size of a symbol in bits. XXX: (must be 1, 2, 4, or 8). */
 static int symbol_width = 1;
 
+/* Frequencies in Hz for each symbol value. */
+static float symbol_freqs[1 << 8] = {2200.f, 1200.f};
+
 static inline int num_symbols(void)
 {
 	return 1 << symbol_width;
@@ -72,20 +75,18 @@ static inline unsigned int symbols_per_byte(void)
 	return CHAR_BIT / symbol_width;
 }
 
-/* Frequencies in Hz for each symbol value. */
-static float symbol_freqs[1 << 8] = {2200.f, 1200.f};
-
-static inline unsigned char bits_from_symbol(unsigned int s, unsigned int i)
-{
-	return s << (symbol_width * i);
-}
-
 /* So-Fi state. */
 
 #define MAX_PACKET_LENGTH 16
 struct sofi_packet {
 	uint8_t len;
 	char payload[UINT8_MAX + 1];
+};
+
+#define MAX_MSG_SYMBOLS ((offsetof(struct sofi_packet, payload) + MAX_PACKET_LENGTH) * 8)
+struct raw_message {
+	size_t len;
+	unsigned char symbols[MAX_MSG_SYMBOLS];
 };
 
 enum sender_state {
@@ -95,22 +96,15 @@ enum sender_state {
 };
 
 enum receiver_state {
-	RECV_STATE_LISTENING,
-	RECV_STATE_LENGTH_GATHER,
-	RECV_STATE_PAYLOAD_GATHER,
-};
-
-#define MAX_MSG_SYMBOLS ((offsetof(struct sofi_packet, payload) + MAX_PACKET_LENGTH) * 8)
-struct sender_msg {
-	size_t len;
-	unsigned char symbols[MAX_MSG_SYMBOLS];
+	RECV_STATE_LISTEN,
+	RECV_STATE_DEMODULATE,
 };
 
 struct callback_data {
 	struct sender_callback_data {
 		enum sender_state state;
 		PaUtilRingBuffer buffer;
-		struct sender_msg *msg;
+		struct raw_message *msg;
 		size_t index;
 		unsigned char symbol;
 		unsigned long frame;
@@ -211,7 +205,7 @@ static int sofi_callback(const void *input_buffer, void *output_buffer,
 static int sender_loop(PaUtilRingBuffer *buffer)
 {
 	struct sofi_packet packet;
-	struct sender_msg msg;
+	struct raw_message msg;
 
 	for (;;) {
 		packet.len = fread(packet.payload, 1, MAX_PACKET_LENGTH, stdin);
@@ -246,18 +240,27 @@ static void *sender_start(void *arg)
 	return (void *)(uintptr_t)sender_loop(arg);
 }
 
-static int print_packet(const struct sofi_packet *packet)
+static int print_message(const struct raw_message *msg)
 {
+	struct sofi_packet packet;
+	unsigned char c;
+
+	memset(&packet, 0, sizeof(packet));
+	for (size_t i = 0; i < msg->len; i++) {
+		c = msg->symbols[i] << ((i % symbols_per_byte()) * symbol_width);
+		((unsigned char *)&packet)[i / symbols_per_byte()] |= c;
+	}
+
 	if (debug_level < 1) {
-		fwrite(packet->payload, 1, packet->len, stdout);
+		fwrite(packet.payload, 1, packet.len, stdout);
 	} else {
-		if (packet->len == 0 && debug_level < 2)
+		if (packet.len == 0 && debug_level < 2)
 			return 0;
 		printf("sofi_packet = {\n");
-		printf("\t.len = %" PRIu8 "\n", packet->len);
+		printf("\t.len = %" PRIu8 "\n", packet.len);
 		printf("\t.payload = \"");
-		for (unsigned i = 0; i < packet->len; i++) {
-			char c = packet->payload[i];
+		for (unsigned i = 0; i < packet.len; i++) {
+			char c = packet.payload[i];
 			switch (c) {
 			case '\"':
 				fputs("\\\"", stdout);
@@ -297,25 +300,17 @@ static int print_packet(const struct sofi_packet *packet)
 
 static int receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 {
-	ring_buffer_size_t ring_ret;
 	int signum;
-	enum receiver_state state = RECV_STATE_LISTENING;
-	char byte = 0;
-	unsigned int symbol_index = 0;
-	struct sofi_packet packet;
-	unsigned offset = 0;
+	enum receiver_state state = RECV_STATE_LISTEN;
+	ring_buffer_size_t ring_ret;
+	struct raw_message msg;
 	int symbol;
 	float max_strength;
-
-#define RECV_STATE_TRANSITION(new_state) do {	\
-	state = new_state;			\
-	debug_printf(2, "%s\n", #new_state);	\
-} while(0)
 
 	while (!(signum = signal_received)) {
 		int window_size;
 
-		if (state == RECV_STATE_LISTENING)
+		if (state == RECV_STATE_LISTEN)
 			window_size = receiver_window();
 		else
 			window_size = (int)((float)sample_rate / baud);
@@ -346,44 +341,29 @@ static int receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 				symbol = i;
 			}
 
-			if (i > 0)
-				debug_printf(3, ", ");
-			debug_printf(3, "%f", strength);
+			debug_printf(3, "%s%f", (i > 0) ? ", " : "", strength);
 		}
 		debug_printf(3, "] = %d\n", symbol);
 
 		switch (state) {
-		case RECV_STATE_LISTENING:
+		case RECV_STATE_LISTEN:
 			if (symbol != -1) {
-				memset(&packet, 0, sizeof(packet));
-				offset = 0;
-				byte = 0;
-				symbol_index = 0;
-				RECV_STATE_TRANSITION(RECV_STATE_LENGTH_GATHER);
+				memset(&msg, 0, sizeof(msg));
+				state = RECV_STATE_DEMODULATE;
+				debug_printf(2, "-> DEMODULATE\n");
 			}
 			break;
-		case RECV_STATE_LENGTH_GATHER:
-		case RECV_STATE_PAYLOAD_GATHER:
+		case RECV_STATE_DEMODULATE:
 			if (symbol == -1) {
-				if (print_packet(&packet))
+				if (print_message(&msg))
 					return -1;
-				RECV_STATE_TRANSITION(RECV_STATE_LISTENING);
+				debug_printf(2, "-> LISTEN\n");
+				state = RECV_STATE_LISTEN;
 				break;
 			}
 
-			byte |= bits_from_symbol(symbol, symbol_index++);
-			if (symbol_index >= symbols_per_byte()) {
-				if (state == RECV_STATE_LENGTH_GATHER) {
-					packet.len = (uint8_t)byte;
-					RECV_STATE_TRANSITION(RECV_STATE_PAYLOAD_GATHER);
-				} else if (state == RECV_STATE_PAYLOAD_GATHER) {
-					if (offset < packet.len &&
-					    offset < MAX_PACKET_LENGTH)
-						packet.payload[offset++] = byte;
-				}
-				byte = 0;
-				symbol_index = 0;
-			}
+			if (msg.len < MAX_MSG_SYMBOLS)
+				msg.symbols[msg.len++] = symbol;
 			break;
 		}
 	}
@@ -558,14 +538,14 @@ int main(int argc, char **argv)
 
 	/* Initialize callback data and receiver window buffer. */
 	if (sender) {
-		sender_buffer_ptr = malloc(SENDER_BUFFER_SIZE * sizeof(struct sender_msg));
+		sender_buffer_ptr = malloc(SENDER_BUFFER_SIZE * sizeof(struct raw_message));
 		if (!sender_buffer_ptr) {
 			perror("malloc");
 			status = EXIT_FAILURE;
 			goto out;
 		}
 		PaUtil_InitializeRingBuffer(&data.sender.buffer,
-					    sizeof(struct sender_msg),
+					    sizeof(struct raw_message),
 					    SENDER_BUFFER_SIZE,
 					    sender_buffer_ptr);
 		data.sender.phase = 0.f;
