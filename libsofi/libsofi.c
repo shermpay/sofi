@@ -95,9 +95,9 @@ static inline void recv_queue_dequeue(struct raw_message *msg)
 #define SENDER_BUFFER_SIZE 2UL /* 2 packets. */
 #define RECEIVER_BUFFER_SIZE (1UL << 20) /* 1M samples. */
 
-static const long sample_rate = 192000L;
-static const float baud = 1200.f;
-static const float recv_window_factor = 0.2f;
+static long sample_rate;
+static float baud;
+static float recv_window_factor;
 
 static inline int receiver_window(void)
 {
@@ -112,10 +112,10 @@ static inline float interpacket_gap(void)
 /* Symbol definitions. */
 
 /* Size of a symbol in bits (must be 1, 2, 4, or 8). */
-static const int symbol_width = 2;
+static int symbol_width;
 
 /* Frequencies in Hz for each symbol value. */
-static const float symbol_freqs[1 << 8] = {2400.f, 1200.f, 4800.f, 3600.f};
+static float symbol_freqs[1 << 8];
 
 static inline int num_symbols(void)
 {
@@ -313,14 +313,21 @@ static void *receiver_loop(void *arg)
 	return (void *)0;
 }
 
-int sofi_init(bool sender, bool receiver)
+int sofi_init(const struct sofi_init_parameters *params)
 {
 	PaError err;
 	int ret;
 	PaStreamParameters input_params, output_params;
 
+	sample_rate = params->sample_rate;
+	baud = params->baud;
+	recv_window_factor = params->recv_window_factor;
+	symbol_width = params->symbol_width;
+	memcpy(symbol_freqs, params->symbol_freqs,
+	       num_symbols() * sizeof(float));
+
 	/* Initialize callback data and receiver window buffer. */
-	if (sender) {
+	if (params->sender) {
 		sender_buffer_ptr = malloc(SENDER_BUFFER_SIZE * sizeof(struct raw_message));
 		if (!sender_buffer_ptr) {
 			perror("malloc");
@@ -332,7 +339,7 @@ int sofi_init(bool sender, bool receiver)
 					    sender_buffer_ptr);
 		data.sender.phase = 0.f;
 	}
-	if (receiver) {
+	if (params->receiver) {
 		receiver_buffer_ptr = malloc(RECEIVER_BUFFER_SIZE * sizeof(float));
 		if (!receiver_buffer_ptr) {
 			perror("malloc");
@@ -357,7 +364,7 @@ int sofi_init(bool sender, bool receiver)
 	}
 
 	/* Pick the parameters for the stream. */
-	if (receiver) {
+	if (params->receiver) {
 		input_params.device = Pa_GetDefaultInputDevice();
 		input_params.channelCount = 1;
 		input_params.sampleFormat = paFloat32;
@@ -365,7 +372,7 @@ int sofi_init(bool sender, bool receiver)
 			Pa_GetDeviceInfo(input_params.device)->defaultLowInputLatency;
 		input_params.hostApiSpecificStreamInfo = NULL;
 	}
-	if (sender) {
+	if (params->sender) {
 		output_params.device = Pa_GetDefaultOutputDevice();
 		output_params.channelCount = 1;
 		output_params.sampleFormat = paFloat32;
@@ -376,8 +383,8 @@ int sofi_init(bool sender, bool receiver)
 
 	/* Open a stream and start it. */
 	err = Pa_OpenStream(&stream,
-			    receiver ? &input_params : NULL,
-			    sender ? &output_params : NULL,
+			    params->receiver ? &input_params : NULL,
+			    params->sender ? &output_params : NULL,
 			    sample_rate, paFramesPerBufferUnspecified,
 			    paClipOff, sofi_callback, &data);
 	if (err != paNoError) {
@@ -393,7 +400,7 @@ int sofi_init(bool sender, bool receiver)
 	}
 
 	/* Start the reciever thread. */
-	if (receiver) {
+	if (params->receiver) {
 		ret = pthread_create(&receiver_thread, NULL, receiver_loop,
 				     &data.receiver.buffer);
 		if (ret) {
