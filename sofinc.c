@@ -9,7 +9,6 @@
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -60,10 +59,10 @@ static inline float interpacket_gap(void)
 /* Symbol definitions. */
 
 /* Size of a symbol in bits. XXX: (must be 1, 2, 4, or 8). */
-static int symbol_width = 1;
+static int symbol_width = 2;
 
 /* Frequencies in Hz for each symbol value. */
-static float symbol_freqs[1 << 8] = {2400.f, 1200.f};
+static float symbol_freqs[1 << 8] = {2400.f, 1200.f, 4800.f, 3600.f};
 
 static inline int num_symbols(void)
 {
@@ -77,16 +76,14 @@ static inline unsigned int symbols_per_byte(void)
 
 /* So-Fi state. */
 
-#define MAX_PACKET_LENGTH 16
 struct sofi_packet {
 	uint8_t len;
-	char payload[UINT8_MAX + 1];
+	char payload[UINT8_MAX];
 };
 
-#define MAX_MSG_SYMBOLS ((offsetof(struct sofi_packet, payload) + MAX_PACKET_LENGTH) * 8)
 struct raw_message {
 	size_t len;
-	unsigned char symbols[MAX_MSG_SYMBOLS];
+	unsigned char symbols[sizeof(struct sofi_packet) * 8];
 };
 
 enum sender_state {
@@ -209,7 +206,8 @@ static int sender_loop(PaUtilRingBuffer *buffer)
 	struct raw_message msg;
 
 	for (;;) {
-		packet.len = fread(packet.payload, 1, MAX_PACKET_LENGTH, stdin);
+		packet.len = fread(packet.payload, 1, sizeof(packet.payload),
+				   stdin);
 		if (packet.len == 0)
 			break;
 
@@ -366,8 +364,7 @@ static int receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 				state = RECV_STATE_LISTEN;
 				break;
 			}
-
-			if (msg.len < MAX_MSG_SYMBOLS)
+			if (msg.len < sizeof(msg.symbols) / sizeof(msg.symbols[0]))
 				msg.symbols[msg.len++] = symbol;
 			break;
 		}
