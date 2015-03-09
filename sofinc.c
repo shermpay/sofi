@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,8 +40,8 @@ static void signal_handler(int signum)
 }
 
 /* Transmission parameters. */
-#define SENDER_BUFFER_SIZE (1 << 12)	/* 4K characters. */
-#define RECEIVER_BUFFER_SIZE (1 << 20)	/* 1M samples. */
+#define SENDER_BUFFER_SIZE 2UL /* 2 packets. */
+#define RECEIVER_BUFFER_SIZE (1UL << 20) /* 1M samples. */
 
 static long sample_rate = 192000L;
 static float baud = 1000.f;
@@ -74,12 +75,6 @@ static inline unsigned int symbols_per_byte(void)
 /* Frequencies in Hz for each symbol value. */
 static float symbol_freqs[1 << 8] = {2200.f, 1200.f};
 
-static inline unsigned int symbol_from_byte(unsigned char c, unsigned int i)
-{
-	unsigned int mask = ((1 << symbol_width) - 1) << (symbol_width * i);
-	return (c & mask) >> (symbol_width * i);
-}
-
 static inline unsigned char bits_from_symbol(unsigned int s, unsigned int i)
 {
 	return s << (symbol_width * i);
@@ -90,7 +85,7 @@ static inline unsigned char bits_from_symbol(unsigned int s, unsigned int i)
 #define MAX_PACKET_LENGTH 16
 struct sofi_packet {
 	uint8_t len;
-	char payload[UINT8_MAX];
+	char payload[UINT8_MAX + 1];
 };
 
 enum sender_state {
@@ -105,28 +100,30 @@ enum receiver_state {
 	RECV_STATE_PAYLOAD_GATHER,
 };
 
-struct callback_data {
-	struct {
-		PaUtilRingBuffer buffer;
-		enum sender_state state;
-		unsigned long frame;
-		struct sofi_packet packet;
-		size_t packet_index;
-		size_t len;
-		float phase;
-		unsigned char byte;
-		unsigned int symbol_index;
-		unsigned int symbol;
-	} sender;
+#define MAX_MSG_SYMBOLS ((offsetof(struct sofi_packet, payload) + MAX_PACKET_LENGTH) * 8)
+struct sender_msg {
+	size_t len;
+	unsigned char symbols[MAX_MSG_SYMBOLS];
+};
 
-	struct {
+struct callback_data {
+	struct sender_callback_data {
+		enum sender_state state;
+		PaUtilRingBuffer buffer;
+		struct sender_msg *msg;
+		size_t index;
+		unsigned char symbol;
+		unsigned long frame;
+		float phase;
+	} sender;
+	struct receiver_callback_data {
 		PaUtilRingBuffer buffer;
 	} receiver;
 };
 
 static void sender_callback(void *output_buffer,
 			    unsigned long frames_per_buffer,
-			    struct callback_data *data)
+			    struct sender_callback_data *data)
 {
 	ring_buffer_size_t ret;
 	float *out = output_buffer;
@@ -136,55 +133,47 @@ static void sender_callback(void *output_buffer,
 	bool first = false;
 
 	for (unsigned long i = 0; i < frames_per_buffer; i++) {
-		switch (data->sender.state) {
+		switch (data->state) {
 		case SEND_STATE_IDLE:
-			ret = PaUtil_GetRingBufferReadRegions(&data->sender.buffer,
-							      MAX_PACKET_LENGTH,
+			ret = PaUtil_GetRingBufferReadRegions(&data->buffer, 1,
 							      &data1, &size1,
 							      &data2, &size2);
 			if (ret == 0) {
 				out[i] = 0.f;
 				break;
 			}
-			memcpy(data->sender.packet.payload, data1, size1);
-			memcpy(data->sender.packet.payload + size1, data2, size2);
-			data->sender.packet.len = size1 + size2;
-			data->sender.len = sizeof(data->sender.packet.len) + data->sender.packet.len;
-			data->sender.packet_index = 0;
+			assert(size1 == 1);
+			assert(size2 == 0);
 
+			data->msg = data1;
+			data->index = 0;
+			data->state = SEND_STATE_TRANSMITTING;
 			first = true;
-			data->sender.state = SEND_STATE_TRANSMITTING;
 			/* Fallthrough. */
 		case SEND_STATE_TRANSMITTING:
-			if (first || ++data->sender.frame >= sample_rate / baud) {
-				if (first || ++data->sender.symbol_index >= symbols_per_byte()) {
-					if (data->sender.packet_index >= data->sender.len) {
-						PaUtil_AdvanceRingBufferReadIndex(&data->sender.buffer,
-										  data->sender.packet.len);
-						data->sender.state = SEND_STATE_INTERPACKET_GAP;
-						data->sender.frame = 0;
-						out[i] = 0.f;
-						break;
-					}
-					data->sender.byte = ((char *)&data->sender.packet)[data->sender.packet_index++];
-					data->sender.symbol_index = 0;
+			if (first || ++data->frame >= sample_rate / baud) {
+				if (data->index >= data->msg->len) {
+					PaUtil_AdvanceRingBufferReadIndex(&data->buffer, 1);
+					data->state = SEND_STATE_INTERPACKET_GAP;
+					data->frame = 0;
+					out[i] = 0.f;
+					break;
 				}
-				data->sender.symbol = symbol_from_byte(data->sender.byte, data->sender.symbol_index);
-				data->sender.frame = 0;
+				data->symbol = data->msg->symbols[data->index++];
+				data->frame = 0;
 			}
 
-			frequency = symbol_freqs[data->sender.symbol];
-
-			out[i] = sinf(data->sender.phase);
-			data->sender.phase += (2 * M_PI * frequency) / sample_rate;
-			while (data->sender.phase >= 2 * M_PI)
-				data->sender.phase -= 2 * M_PI;
+			out[i] = sinf(data->phase);
+			frequency = symbol_freqs[data->symbol];
+			data->phase += (2.f * M_PI * frequency) / sample_rate;
+			while (data->phase >= 2.f * M_PI)
+				data->phase -= 2.f * M_PI;
 			first = false;
 			break;
 		case SEND_STATE_INTERPACKET_GAP:
 			out[i] = 0.f;
-			if (++data->sender.frame >= interpacket_gap() * sample_rate)
-				data->sender.state = SEND_STATE_IDLE;
+			if (++data->frame >= interpacket_gap() * sample_rate)
+				data->state = SEND_STATE_IDLE;
 			break;
 		}
 	}
@@ -192,15 +181,14 @@ static void sender_callback(void *output_buffer,
 
 static void receiver_callback(const void *input_buffer,
 			      unsigned long frames_per_buffer,
-			      struct callback_data *data)
+			      struct receiver_callback_data *data)
 {
 	ring_buffer_size_t ret;
-	if (data->sender.state == SEND_STATE_IDLE) {
-		ret = PaUtil_GetRingBufferWriteAvailable(&data->receiver.buffer);
-		assert((unsigned long)ret >= frames_per_buffer);
-		ret = PaUtil_WriteRingBuffer(&data->receiver.buffer, input_buffer, frames_per_buffer);
-		assert((unsigned long)ret == frames_per_buffer);
-	}
+
+	ret = PaUtil_GetRingBufferWriteAvailable(&data->buffer);
+	assert((unsigned long)ret >= frames_per_buffer);
+	ret = PaUtil_WriteRingBuffer(&data->buffer, input_buffer, frames_per_buffer);
+	assert((unsigned long)ret == frames_per_buffer);
 }
 
 static int sofi_callback(const void *input_buffer, void *output_buffer,
@@ -208,43 +196,49 @@ static int sofi_callback(const void *input_buffer, void *output_buffer,
 			 const PaStreamCallbackTimeInfo *time_info,
 			 PaStreamCallbackFlags status_flags, void *arg)
 {
-
+	struct callback_data *data = arg;
 	(void)time_info;
 	(void)status_flags;
 
 	if (output_buffer)
-		sender_callback(output_buffer, frames_per_buffer, arg);
-	if (input_buffer)
-		receiver_callback(input_buffer, frames_per_buffer, arg);
+		sender_callback(output_buffer, frames_per_buffer, &data->sender);
+	if (input_buffer && data->sender.state == SEND_STATE_IDLE)
+		receiver_callback(input_buffer, frames_per_buffer, &data->receiver);
 
 	return paContinue;
 }
 
 static int sender_loop(PaUtilRingBuffer *buffer)
 {
-	ring_buffer_size_t ring_ret;
-	char c;
-	int ret = 0;
+	struct sofi_packet packet;
+	struct sender_msg msg;
 
 	for (;;) {
-		c = getc(stdin);
-		if (c == EOF) {
-			if (ferror(stdin) && errno != EINTR) {
-				perror("getc");
-				ret = -1;
-			}
+		packet.len = fread(packet.payload, 1, MAX_PACKET_LENGTH, stdin);
+		if (packet.len == 0)
 			break;
+
+		msg.len = 0;
+		for (size_t i = 0; i < sizeof(packet.len) + packet.len; i++) {
+			unsigned char c = ((unsigned char *)&packet)[i];
+			for (unsigned int j = 0; j < symbols_per_byte(); j++) {
+				msg.symbols[msg.len++] = c & ((1 << symbol_width) - 1);
+				c >>= symbol_width;
+			}
 		}
-		while (PaUtil_GetRingBufferWriteAvailable(buffer) < 1)
+		while (PaUtil_WriteRingBuffer(buffer, &msg, 1) < 1)
 			Pa_Sleep(CHAR_BIT * 1000.f / baud);
-		ring_ret = PaUtil_WriteRingBuffer(buffer, &c, 1);
-		assert(ring_ret == 1);
 	}
 
 	/* Wait for any outstanding output to be sent. */
 	while (PaUtil_GetRingBufferReadAvailable(buffer) > 0)
-		Pa_Sleep(100);
-	return ret;
+		Pa_Sleep(CHAR_BIT * 1000.f / baud);
+
+	if (ferror(stdin) && errno != EINTR) {
+		perror("fread");
+		return -1;
+	}
+	return 0;
 }
 
 static void *sender_start(void *arg)
@@ -252,14 +246,14 @@ static void *sender_start(void *arg)
 	return (void *)(uintptr_t)sender_loop(arg);
 }
 
-static int print_frame(const struct sofi_packet *packet)
+static int print_packet(const struct sofi_packet *packet)
 {
 	if (debug_level < 1) {
 		fwrite(packet->payload, 1, packet->len, stdout);
 	} else {
 		if (packet->len == 0 && debug_level < 2)
 			return 0;
-		printf("sofi_frame = {\n");
+		printf("sofi_packet = {\n");
 		printf("\t.len = %" PRIu8 "\n", packet->len);
 		printf("\t.payload = \"");
 		for (unsigned i = 0; i < packet->len; i++) {
@@ -327,7 +321,7 @@ static int receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 			window_size = (int)((float)sample_rate / baud);
 
 		if (PaUtil_GetRingBufferReadAvailable(buffer) < window_size) {
-			Pa_Sleep(1000 * window_size / sample_rate);
+			Pa_Sleep(1000.f * window_size / sample_rate);
 			continue;
 		}
 
@@ -361,7 +355,7 @@ static int receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 		switch (state) {
 		case RECV_STATE_LISTENING:
 			if (symbol != -1) {
-				packet.len = 0;
+				memset(&packet, 0, sizeof(packet));
 				offset = 0;
 				byte = 0;
 				symbol_index = 0;
@@ -371,8 +365,7 @@ static int receiver_loop(PaUtilRingBuffer *buffer, float *window_buffer)
 		case RECV_STATE_LENGTH_GATHER:
 		case RECV_STATE_PAYLOAD_GATHER:
 			if (symbol == -1) {
-				memset(packet.payload + offset, 0, packet.len - offset);
-				if (print_frame(&packet))
+				if (print_packet(&packet))
 					return -1;
 				RECV_STATE_TRANSITION(RECV_STATE_LISTENING);
 				break;
@@ -565,13 +558,14 @@ int main(int argc, char **argv)
 
 	/* Initialize callback data and receiver window buffer. */
 	if (sender) {
-		sender_buffer_ptr = malloc(SENDER_BUFFER_SIZE);
+		sender_buffer_ptr = malloc(SENDER_BUFFER_SIZE * sizeof(struct sender_msg));
 		if (!sender_buffer_ptr) {
 			perror("malloc");
 			status = EXIT_FAILURE;
 			goto out;
 		}
-		PaUtil_InitializeRingBuffer(&data.sender.buffer, 1,
+		PaUtil_InitializeRingBuffer(&data.sender.buffer,
+					    sizeof(struct sender_msg),
 					    SENDER_BUFFER_SIZE,
 					    sender_buffer_ptr);
 		data.sender.phase = 0.f;
