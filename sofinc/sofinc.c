@@ -61,6 +61,8 @@ static void usage(bool error)
 		"  -w, --window=WINDOW_FACTOR         use a window of size WINDOW_FACTOR times\n"
 		"                                     the symbol duration time to detect a carrier\n"
 		"                                     wave\n"
+		"  -g, --gap=GAP_FACTOR               use a gap between packets of size GAP_FACTOR\n"
+		"                                     times the symbol duration time\n"
 		"  -b, --baud=BAUD                    run at BAUD symbols per second\n"
 		"\n"
 		"Miscellaneous:\n"
@@ -85,6 +87,7 @@ int main(int argc, char** argv)
 			{"sample-rate",	required_argument,	NULL,	's'},
 			{"frequencies",	required_argument,	NULL,	'f'},
 			{"window",	required_argument,	NULL,	'w'},
+			{"gap",		required_argument,	NULL,	'g'},
 			{"baud",	required_argument,	NULL,	'b'},
 			{"debug-level",	required_argument,	NULL,	'd'},
 			{"help",	no_argument,		NULL,	'h'},
@@ -95,7 +98,7 @@ int main(int argc, char** argv)
 		float freq;
 		int i;
 
-		opt = getopt_long(argc, argv, "b:f:s:w:dh",
+		opt = getopt_long(argc, argv, "b:f:s:w:g:dh",
 				  longopts, &longindex);
 		if (opt == -1)
 			break;
@@ -154,6 +157,16 @@ int main(int argc, char** argv)
 				usage(true);
 			if (params.recv_window_factor <= 0.f) {
 				fprintf(stderr, "%s: receiver window factor must be positive\n",
+					progname);
+				usage(true);
+			}
+			break;
+		case 'g':
+			params.interpacket_gap_factor = strtof(optarg, &end);
+			if (*end != '\0')
+				usage(true);
+			if (params.interpacket_gap_factor < 1.f) {
+				fprintf(stderr, "%s: interpacket gap factor must be >=1\n",
 					progname);
 				usage(true);
 			}

@@ -1,5 +1,7 @@
 #include <assert.h>
+#include <ctype.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <math.h>
 #include <portaudio.h>
@@ -98,6 +100,7 @@ static inline void recv_queue_dequeue(struct raw_message *msg)
 static long sample_rate;
 static float baud;
 static float recv_window_factor;
+static float interpacket_gap_factor;
 
 static inline int receiver_window(void)
 {
@@ -106,7 +109,7 @@ static inline int receiver_window(void)
 
 static inline float interpacket_gap(void)
 {
-	return 2.f / baud;
+	return interpacket_gap_factor / baud;
 }
 
 /* Symbol definitions. */
@@ -322,6 +325,7 @@ int sofi_init(const struct sofi_init_parameters *params)
 	sample_rate = params->sample_rate;
 	baud = params->baud;
 	recv_window_factor = params->recv_window_factor;
+	interpacket_gap_factor = params->interpacket_gap_factor;
 	symbol_width = params->symbol_width;
 	memcpy(symbol_freqs, params->symbol_freqs,
 	       num_symbols() * sizeof(float));
@@ -412,13 +416,15 @@ int sofi_init(const struct sofi_init_parameters *params)
 	}
 
 	debug_printf(1,
-		     "Sample rate:\t%ld Hz\n"
-		     "Baud:\t\t%.2f symbols/sec, %d samples, %.2f seconds\n"
-		     "Window:\t\t%d samples, %.2f seconds\n",
+		     "Sample rate:\t\t%ld Hz\n"
+		     "Baud:\t\t\t%.2f symbols/sec, %d samples, %.4f seconds\n"
+		     "Window:\t\t\t%d samples, %.4f seconds\n"
+		     "Interpacket gap:\t%d samples, %.4f seconds\n",
 		     sample_rate,
 		     baud, (int)((float)sample_rate / baud), 1.f / baud,
-		     receiver_window(), receiver_window() / (float)sample_rate);
-	debug_printf(1, "Frequencies:\t");
+		     receiver_window(), receiver_window() / (float)sample_rate,
+		     (int)(interpacket_gap() * sample_rate), interpacket_gap());
+	debug_printf(1, "Frequencies:\t\t");
 	for (int i = 0; i < num_symbols(); i++)
 		debug_printf(1, "%s%.2f Hz", (i > 0) ? ", " : "", symbol_freqs[i]);
 	debug_printf(1, "\n");
@@ -485,6 +491,43 @@ void sofi_destroy(void)
 	free(window_buffer);
 }
 
+static void dump_packet(const struct sofi_packet *packet, const char *s)
+{
+	fprintf(stderr, "%s sofi_packet = {\n", s);
+	fprintf(stderr, "\t.len = %" PRIu8 "\n", packet->len);
+	fprintf(stderr, "\t.payload = \"");
+	for (unsigned i = 0; i < packet->len; i++) {
+		char c = packet->payload[i];
+		switch (c) {
+		case '\"':
+			fputs("\\\"", stderr);
+			break;
+		case '\\':
+			fputs("\\\\", stderr);
+			break;
+		case '\a':
+			fputs("\\a", stderr);
+			break;
+		case '\b':
+			fputs("\\b", stderr);
+			break;
+		case '\n':
+			fputs("\\n", stderr);
+			break;
+		case '\t':
+			fputs("\\t", stderr);
+			break;
+		default:
+			if (isprint(c))
+				fputc(c, stderr);
+			else
+				fprintf(stderr, "\\%03o", (unsigned char)c);
+		}
+	}
+	fprintf(stderr, "\"\n");
+	fprintf(stderr, "}\n");
+}
+
 static uint32_t crc32(unsigned char *buf, size_t len)
 {
 	uint32_t tab[256];
@@ -515,6 +558,9 @@ void sofi_send(const struct sofi_packet *packet)
 	unsigned char buf[sizeof(*packet) + sizeof(uint32_t)];
 	size_t size;
 	uint32_t crc;
+
+	if (debug_level)
+		dump_packet(packet, "send");
 
 	size = sizeof(packet->len) + packet->len;
 	memcpy(buf, packet, size);
@@ -555,9 +601,11 @@ void sofi_recv(struct sofi_packet *packet)
 		crc2 = crc32(buf, sizeof(len) + len);
 		if (crc1 == crc2) {
 			memcpy(packet, buf, sizeof(len) + len);
+			if (debug_level)
+				dump_packet(packet, "recv");
 			break;
 		} else {
-			debug_printf(2, "dropped corrupt packet\n");
+			debug_printf(2, "sofi_packet corrupt; 0x%08" PRIx32 " != 0x%08" PRIx32 "\n", crc1, crc2);
 		}
 	}
 }

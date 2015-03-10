@@ -16,6 +16,8 @@ struct sofi_init_parameters {
 	float baud;
 	/* Factor of symbol length to use for detecting a carrier wave. */
 	float recv_window_factor;
+	/* Factor of symbol length to wait between sending packets. */
+	float interpacket_gap_factor;
 	/* Size of a symbol in bits (must be 1, 2, 4, or 8). */
 	int symbol_width;
 	/* 1 << symbol_width frequencies in Hz to use as the symbols. */
@@ -29,7 +31,8 @@ struct sofi_init_parameters {
 #define DEFAULT_SOFI_INIT_PARAMS {	\
 	.sample_rate = 192000.f,	\
 	.baud = 1200.f,			\
-	.recv_window_factor = 0.2f,	\
+	.recv_window_factor = 0.1f,	\
+	.interpacket_gap_factor = 15.f,	\
 	.symbol_width = 2,		\
 	.symbol_freqs = {2400.f, 1200.f, 4800.f, 3600.f}, \
 	.sender = true,			\
