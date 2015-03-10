@@ -36,7 +36,7 @@ static pthread_t receiver_thread;
 
 struct raw_message {
 	size_t len;
-	unsigned char symbols[sizeof(struct sofi_packet) * 8];
+	unsigned char symbols[(sizeof(struct sofi_packet) + sizeof(uint32_t)) * 8];
 };
 
 /*
@@ -472,13 +472,46 @@ void sofi_destroy(void)
 	free(window_buffer);
 }
 
+static uint32_t crc32(unsigned char *buf, size_t len)
+{
+	uint32_t tab[256];
+	uint32_t val;
+
+	for (int i = 0; i < 256; i++) {
+		uint32_t crc = i;
+		for (int j = 0; j < 8; j++) {
+			if (crc & 1)
+				crc = (crc >> 1) ^ UINT32_C(0xedb88320);
+			else
+				crc >>= 1;
+		}
+		tab[i] = crc;
+	}
+
+	val = ~UINT32_C(0);
+	for (size_t i = 0; i < len; i++) {
+		int idx = (uint8_t)val ^ (uint8_t)buf[i];
+		val = tab[idx] ^ (val >> 8);
+	}
+	return ~val;
+}
+
 void sofi_send(const struct sofi_packet *packet)
 {
 	struct raw_message msg;
+	unsigned char buf[sizeof(*packet) + sizeof(uint32_t)];
+	size_t size;
+	uint32_t crc;
+
+	size = sizeof(packet->len) + packet->len;
+	memcpy(buf, packet, size);
+	crc = crc32(buf, size);
+	memcpy(buf + size, &crc, sizeof(crc));
+	size += sizeof(crc);
 
 	msg.len = 0;
-	for (size_t i = 0; i < sizeof(packet->len) + packet->len; i++) {
-		unsigned char c = ((unsigned char *)packet)[i];
+	for (size_t i = 0; i < size; i++) {
+		unsigned char c = buf[i];
 		for (unsigned int j = 0; j < symbols_per_byte(); j++) {
 			msg.symbols[msg.len++] = c & ((1 << symbol_width) - 1);
 			c >>= symbol_width;
@@ -491,12 +524,27 @@ void sofi_send(const struct sofi_packet *packet)
 void sofi_recv(struct sofi_packet *packet)
 {
 	struct raw_message msg;
+	unsigned char buf[sizeof(*packet) + sizeof(uint32_t)];
+	uint8_t len;
+	uint32_t crc1, crc2;
 
-	recv_queue_dequeue(&msg);
-	memset(packet, 0, sizeof(*packet));
-	for (size_t i = 0; i < msg.len; i++) {
-		unsigned char c =
-			msg.symbols[i] << ((i % symbols_per_byte()) * symbol_width);
-		((unsigned char *)packet)[i / symbols_per_byte()] |= c;
+	for (;;) {
+		recv_queue_dequeue(&msg);
+		memset(buf, 0, sizeof(buf));
+		for (size_t i = 0; i < msg.len; i++) {
+			unsigned char c =
+				msg.symbols[i] << ((i % symbols_per_byte()) * symbol_width);
+			if (i / symbols_per_byte() < sizeof(buf))
+				buf[i / symbols_per_byte()] |= c;
+		}
+		memcpy(&len, buf, sizeof(len));
+		memcpy(&crc1, buf + sizeof(len) + len, sizeof(crc1));
+		crc2 = crc32(buf, sizeof(len) + len);
+		if (crc1 == crc2) {
+			memcpy(packet, buf, sizeof(len) + len);
+			break;
+		} else {
+			debug_printf(2, "dropped corrupt packet\n");
+		}
 	}
 }

@@ -1,5 +1,4 @@
-# ALL_CFLAGS := -Wall -Wextra -Werror -std=c99 -I. -g $(CFLAGS)
-ALL_CFLAGS := -Wall -Wextra -std=c99 -I. -g $(CFLAGS)
+ALL_CFLAGS := -Wall -Wextra -Werror -std=c99 -I. -g $(CFLAGS)
 BUILD ?= build
 SOFINC_OBJS := $(addprefix $(BUILD)/, sofinc/sofinc.o)
 LIBSOFI_OBJS := $(addprefix $(BUILD)/, libsofi/libsofi.o libsofi/pa_ringbuffer.o)
