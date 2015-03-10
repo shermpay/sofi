@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <errno.h>
 #include <getopt.h>
 #include <pthread.h>
@@ -10,9 +11,12 @@
 static const char *progname = "sofinc";
 static bool keep_open;
 
+static pthread_t sender_thread, receiver_thread;
+
 static void *sender_loop(void *arg)
 {
 	struct sofi_packet packet;
+	void *status = (void *)0;
 
 	(void)arg;
 
@@ -27,14 +31,16 @@ static void *sender_loop(void *arg)
 	sofi_send(&packet);
 	if (ferror(stdin) && errno != EINTR) {
 		perror("fread");
-		return (void *)-1;
+		status = (void *)-1;
 	}
-	return (void *)0;
+	pthread_cancel(receiver_thread);
+	return status;
 }
 
 static void *receiver_loop(void *arg)
 {
 	struct sofi_packet packet;
+	void *status = (void *)0;
 
 	(void)arg;
 
@@ -49,10 +55,12 @@ static void *receiver_loop(void *arg)
 		fflush(stdout);
 		if (ferror(stdout)) {
 			perror("fflush");
-			return (void *)-1;
+			status = (void *)-1;
+			break;
 		}
 	}
-	return (void *)0;
+	pthread_cancel(sender_thread);
+	return status;
 }
 
 static void usage(bool error)
@@ -86,10 +94,10 @@ static void usage(bool error)
 
 int main(int argc, char** argv)
 {
-	pthread_t sender_thread, receiver_thread;
 	int ret;
 	int status = EXIT_SUCCESS;
 	struct sofi_init_parameters params = DEFAULT_SOFI_INIT_PARAMS;
+	void *retval;
 
 	if (argc > 0)
 		progname = argv[0];
@@ -219,9 +227,12 @@ int main(int argc, char** argv)
 		goto out;
 	}
 
-	pthread_join(sender_thread, NULL);
-	pthread_cancel(receiver_thread);
-	pthread_join(receiver_thread, NULL);
+	pthread_join(sender_thread, &retval);
+	if (retval)
+		status = EXIT_FAILURE;
+	pthread_join(receiver_thread, &retval);
+	if (retval)
+		status = EXIT_FAILURE;
 
 out:
 	sofi_destroy();
