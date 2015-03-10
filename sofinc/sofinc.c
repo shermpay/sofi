@@ -1,12 +1,14 @@
 #include <errno.h>
 #include <getopt.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 #include "sofi.h"
 
 static const char *progname = "sofinc";
+static bool keep_open;
 
 static void *sender_loop(void *arg)
 {
@@ -21,6 +23,8 @@ static void *sender_loop(void *arg)
 			break;
 		sofi_send(&packet);
 	}
+	packet.len = 0;
+	sofi_send(&packet);
 	if (ferror(stdin) && errno != EINTR) {
 		perror("fread");
 		return (void *)-1;
@@ -36,6 +40,11 @@ static void *receiver_loop(void *arg)
 
 	for (;;) {
 		sofi_recv(&packet);
+		if (packet.len == 0 && !keep_open) {
+			if (fclose(stdout))
+				perror("fclose");
+			break;
+		}
 		fwrite(packet.payload, 1, packet.len, stdout);
 		fflush(stdout);
 		if (ferror(stdout)) {
@@ -66,6 +75,8 @@ static void usage(bool error)
 		"  -b, --baud=BAUD                    run at BAUD symbols per second\n"
 		"\n"
 		"Miscellaneous:\n"
+		"  -k, --keep-open                    keep the connection open even if the sender\n"
+		"                                     closes it\n"
 		"  -d                                 increase the debug level by one\n"
 		"  --debug-level=DEBUG_LEVEL          set the debug level to DEBUG_LEVEL\n"
 		"  -h, --help                         display this help text and exit\n"
@@ -89,6 +100,7 @@ int main(int argc, char** argv)
 			{"window",	required_argument,	NULL,	'w'},
 			{"gap",		required_argument,	NULL,	'g'},
 			{"baud",	required_argument,	NULL,	'b'},
+			{"keep-open",	no_argument,		NULL,	'k'},
 			{"debug-level",	required_argument,	NULL,	'd'},
 			{"help",	no_argument,		NULL,	'h'},
 		};
@@ -98,7 +110,7 @@ int main(int argc, char** argv)
 		float freq;
 		int i;
 
-		opt = getopt_long(argc, argv, "b:f:s:w:g:dh",
+		opt = getopt_long(argc, argv, "b:f:s:w:g:kdh",
 				  longopts, &longindex);
 		if (opt == -1)
 			break;
@@ -171,6 +183,8 @@ int main(int argc, char** argv)
 				usage(true);
 			}
 			break;
+		case 'k':
+			keep_open = true;
 		case 'd':
 			if (optarg)
 				params.debug_level = atoi(optarg);
