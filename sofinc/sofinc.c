@@ -86,6 +86,7 @@ int main(int argc, char** argv)
 			{"frequencies",	required_argument,	NULL,	'f'},
 			{"window",	required_argument,	NULL,	'w'},
 			{"baud",	required_argument,	NULL,	'b'},
+			{"debug-level",	required_argument,	NULL,	'd'},
 			{"help",	no_argument,		NULL,	'h'},
 		};
 		int opt;
@@ -94,7 +95,7 @@ int main(int argc, char** argv)
 		float freq;
 		int i;
 
-		opt = getopt_long(argc, argv, "b:f:s:w:h",
+		opt = getopt_long(argc, argv, "b:f:s:w:dh",
 				  longopts, &longindex);
 		if (opt == -1)
 			break;
@@ -156,6 +157,12 @@ int main(int argc, char** argv)
 					progname);
 				usage(true);
 			}
+			break;
+		case 'd':
+			if (optarg)
+				params.debug_level = atoi(optarg);
+			else
+				params.debug_level++;
 			break;
 		case 'h':
 			usage(false);

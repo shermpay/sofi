@@ -325,6 +325,7 @@ int sofi_init(const struct sofi_init_parameters *params)
 	symbol_width = params->symbol_width;
 	memcpy(symbol_freqs, params->symbol_freqs,
 	       num_symbols() * sizeof(float));
+	debug_level = params->debug_level;
 
 	/* Initialize callback data and receiver window buffer. */
 	if (params->sender) {
@@ -409,6 +410,18 @@ int sofi_init(const struct sofi_init_parameters *params)
 			goto stop_stream;
 		}
 	}
+
+	debug_printf(1,
+		     "Sample rate:\t%ld Hz\n"
+		     "Baud:\t\t%.2f symbols/sec, %d samples, %.2f seconds\n"
+		     "Window:\t\t%d samples, %.2f seconds\n",
+		     sample_rate,
+		     baud, (int)((float)sample_rate / baud), 1.f / baud,
+		     receiver_window(), receiver_window() / (float)sample_rate);
+	debug_printf(1, "Frequencies:\t");
+	for (int i = 0; i < num_symbols(); i++)
+		debug_printf(1, "%s%.2f Hz", (i > 0) ? ", " : "", symbol_freqs[i]);
+	debug_printf(1, "\n");
 
 	return 0;
 

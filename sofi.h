@@ -22,6 +22,8 @@ struct sofi_init_parameters {
 	float symbol_freqs[1 << 8];
 	/* Run the sender/receiver. */
 	bool sender, receiver;
+	/* Level of debugging messages to print. */
+	int debug_level;
 };
 
 #define DEFAULT_SOFI_INIT_PARAMS {	\
@@ -32,6 +34,7 @@ struct sofi_init_parameters {
 	.symbol_freqs = {2400.f, 1200.f, 4800.f, 3600.f}, \
 	.sender = true,			\
 	.receiver = true,		\
+	.debug_level = 0,		\
 }
 
 /**
