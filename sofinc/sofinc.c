@@ -13,12 +13,11 @@ static bool keep_open;
 
 static pthread_t sender_thread, receiver_thread;
 
-static void *sender_loop(void *arg)
+static void *sender_loop(void *receiver)
 {
 	struct sofi_packet packet;
 	void *status = (void *)0;
-
-	(void)arg;
+	int ret;
 
 	for (;;) {
 		packet.len = fread(packet.payload, 1, sizeof(packet.payload),
@@ -33,16 +32,18 @@ static void *sender_loop(void *arg)
 		perror("fread");
 		status = (void *)-1;
 	}
-	pthread_cancel(receiver_thread);
+	if (receiver) {
+		ret = pthread_cancel(receiver_thread);
+		assert(ret == 0);
+	}
 	return status;
 }
 
-static void *receiver_loop(void *arg)
+static void *receiver_loop(void *sender)
 {
 	struct sofi_packet packet;
 	void *status = (void *)0;
-
-	(void)arg;
+	int ret;
 
 	for (;;) {
 		sofi_recv(&packet);
@@ -59,7 +60,10 @@ static void *receiver_loop(void *arg)
 			break;
 		}
 	}
-	pthread_cancel(sender_thread);
+	if (sender) {
+		ret = pthread_cancel(sender_thread);
+		assert(ret == 0);
+	}
 	return status;
 }
 
@@ -70,6 +74,11 @@ static void usage(bool error)
 		"Transmit data over sound, reading from standard input and writing to standard\n"
 		"output.\n"
 		"\n"
+		"Communication direction:\n"
+		"  -R, --receiver                     run the receiver (enabled by default unless\n"
+		"                                     --sender is given)\n"
+		"  -S, --sender                       run the sender (enabled by default unless\n"
+		"                                     --receiver is given)\n"
 		"Transmission parameters:\n"
 		"  -s, --sample-rate=SAMPLE_RATE      set up the streams at SAMPLE_RATE\n"
 		"  -f, --frequencies=FREQ0,FREQ1,...  use the given frequencies for symbols,\n"
@@ -96,13 +105,17 @@ int main(int argc, char** argv)
 {
 	int ret;
 	int status = EXIT_SUCCESS;
-	struct sofi_init_parameters params = DEFAULT_SOFI_INIT_PARAMS;
 	void *retval;
+	struct sofi_init_parameters params = DEFAULT_SOFI_INIT_PARAMS;
+	params.sender = false;
+	params.receiver = false;
 
 	if (argc > 0)
 		progname = argv[0];
 	for (;;) {
 		static struct option longopts[] = {
+			{"receiver",	no_argument,		NULL,	'R'},
+			{"sender",	no_argument,		NULL,	'S'},
 			{"sample-rate",	required_argument,	NULL,	's'},
 			{"frequencies",	required_argument,	NULL,	'f'},
 			{"window",	required_argument,	NULL,	'w'},
@@ -118,12 +131,18 @@ int main(int argc, char** argv)
 		float freq;
 		int i;
 
-		opt = getopt_long(argc, argv, "b:f:s:w:g:kdh",
+		opt = getopt_long(argc, argv, "RSb:f:s:w:g:kdh",
 				  longopts, &longindex);
 		if (opt == -1)
 			break;
 
 		switch (opt) {
+		case 'R':
+			params.receiver = true;
+			break;
+		case 'S':
+			params.sender = true;
+			break;
 		case 'b':
 			params.baud = strtof(optarg, &end);
 			if (*end != '\0')
@@ -205,34 +224,50 @@ int main(int argc, char** argv)
 			usage(true);
 		}
 	}
+	if (!params.sender && !params.receiver)
+		params.sender = params.receiver = true;
+
 	ret = sofi_init(&params);
 	if (ret)
 		return EXIT_FAILURE;
 
-	ret = pthread_create(&sender_thread, NULL, sender_loop, NULL);
-	if (ret) {
-		errno = ret;
-		perror("pthread_create");
-		status = EXIT_FAILURE;
-		goto out;
+	if (params.sender) {
+		ret = pthread_create(&sender_thread, NULL, sender_loop,
+				     (void *)params.receiver);
+		if (ret) {
+			errno = ret;
+			perror("pthread_create");
+			status = EXIT_FAILURE;
+			goto out;
+		}
+	}
+	if (params.receiver) {
+		ret = pthread_create(&receiver_thread, NULL, receiver_loop,
+				     (void *)params.sender);
+		if (ret) {
+			if (params.sender) {
+				pthread_cancel(sender_thread);
+				pthread_join(sender_thread, NULL);
+			}
+			errno = ret;
+			perror("pthread_create");
+			status = EXIT_FAILURE;
+			goto out;
+		}
 	}
 
-	ret = pthread_create(&receiver_thread, NULL, receiver_loop, NULL);
-	if (ret) {
-		pthread_cancel(sender_thread);
-		pthread_join(sender_thread, NULL);
-		errno = ret;
-		perror("pthread_create");
-		status = EXIT_FAILURE;
-		goto out;
+	if (params.sender) {
+		ret = pthread_join(sender_thread, &retval);
+		assert(ret == 0);
+		if (retval)
+			status = EXIT_FAILURE;
 	}
-
-	pthread_join(sender_thread, &retval);
-	if (retval)
-		status = EXIT_FAILURE;
-	pthread_join(receiver_thread, &retval);
-	if (retval)
-		status = EXIT_FAILURE;
+	if (params.receiver) {
+		ret = pthread_join(receiver_thread, &retval);
+		assert(ret == 0);
+		if (retval)
+			status = EXIT_FAILURE;
+	}
 
 out:
 	sofi_destroy();

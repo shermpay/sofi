@@ -35,6 +35,7 @@ static void *sender_buffer_ptr;
 static void *receiver_buffer_ptr;
 static float *window_buffer;
 static pthread_t receiver_thread;
+static bool receiver;
 
 struct raw_message {
 	size_t len;
@@ -406,6 +407,7 @@ int sofi_init(const struct sofi_init_parameters *params)
 
 	/* Start the reciever thread. */
 	if (params->receiver) {
+		receiver = true;
 		ret = pthread_create(&receiver_thread, NULL, receiver_loop,
 				     &data.receiver.buffer);
 		if (ret) {
@@ -416,10 +418,14 @@ int sofi_init(const struct sofi_init_parameters *params)
 	}
 
 	debug_printf(1,
+		     "Sending:\t\t%s\n"
+		     "Receiving:\t\t%s\n"
 		     "Sample rate:\t\t%ld Hz\n"
 		     "Baud:\t\t\t%.2f symbols/sec, %d samples, %.4f seconds\n"
 		     "Window:\t\t\t%d samples, %.4f seconds\n"
 		     "Interpacket gap:\t%d samples, %.4f seconds\n",
+		     params->sender ? "yes" : "no",
+		     params->receiver ? "yes" : "no",
 		     sample_rate,
 		     baud, (int)((float)sample_rate / baud), 1.f / baud,
 		     receiver_window(), receiver_window() / (float)sample_rate,
@@ -459,9 +465,14 @@ err:
 void sofi_destroy(void)
 {
 	PaError err;
+	int ret;
 
-	pthread_cancel(receiver_thread);
-	pthread_join(receiver_thread, NULL);
+	if (receiver) {
+		ret = pthread_cancel(receiver_thread);
+		assert(ret == 0);
+		ret = pthread_join(receiver_thread, NULL);
+		assert(ret == 0);
+	}
 
 	/*
 	 * Wait for any outstanding output to be sent, plus a little extra
