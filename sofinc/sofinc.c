@@ -201,8 +201,8 @@ int main(int argc, char** argv)
 				usage(true);
 			if (max_message_length == 0 ||
 			    max_message_length > MAX_MESSAGE_LENGTH) {
-				fprintf(stderr, "%s: max message length must be non-zero and <=%zu\n",
-					progname, MAX_MESSAGE_LENGTH);
+				fprintf(stderr, "%s: max message length must be non-zero and <=%lu\n",
+					progname, (unsigned long)MAX_MESSAGE_LENGTH);
 				usage(true);
 			}
 			break;
