@@ -212,6 +212,7 @@ int main(int argc, char** argv)
 			break;
 		case 'k':
 			keep_open = true;
+			break;
 		case 'd':
 			if (optarg)
 				params.debug_level = atoi(optarg);
