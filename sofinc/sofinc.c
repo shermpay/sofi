@@ -8,8 +8,11 @@
 
 #include "sofi.h"
 
+#define MAX_MESSAGE_LENGTH (sizeof(((struct sofi_packet *)0)->payload))
+
 static const char *progname = "sofinc";
 static bool keep_open;
+static size_t max_message_length = MAX_MESSAGE_LENGTH;
 
 static pthread_t sender_thread, receiver_thread;
 
@@ -20,7 +23,7 @@ static void *sender_loop(void *receiver)
 	int ret;
 
 	for (;;) {
-		packet.len = fread(packet.payload, 1, sizeof(packet.payload),
+		packet.len = fread(packet.payload, 1, max_message_length,
 				   stdin);
 		if (packet.len == 0)
 			break;
@@ -80,16 +83,17 @@ static void usage(bool error)
 		"  -S, --sender                       run the sender (enabled by default unless\n"
 		"                                     --receiver is given)\n"
 		"Transmission parameters:\n"
-		"  -s, --sample-rate=SAMPLE_RATE      set up the streams at SAMPLE_RATE\n"
+		"  -b, --baud=BAUD                    run at BAUD symbols per second\n"
 		"  -f, --frequencies=FREQ0,FREQ1,...  use the given frequencies for symbols,\n"
 		"                                     with 2, 4, 16, or 256 frequencies for a\n"
 		"                                     symbol width of 1, 2, 4, or 8, respectively\n"
+		"  -g, --gap=GAP_FACTOR               use a gap between packets of size GAP_FACTOR\n"
+		"                                     times the symbol duration time\n"
+		"  -l, --max-length=LENGTH            send packets of at most LENGTH bytes\n"
+		"  -s, --sample-rate=SAMPLE_RATE      set up the streams at SAMPLE_RATE\n"
 		"  -w, --window=WINDOW_FACTOR         use a window of size WINDOW_FACTOR times\n"
 		"                                     the symbol duration time to detect a carrier\n"
 		"                                     wave\n"
-		"  -g, --gap=GAP_FACTOR               use a gap between packets of size GAP_FACTOR\n"
-		"                                     times the symbol duration time\n"
-		"  -b, --baud=BAUD                    run at BAUD symbols per second\n"
 		"\n"
 		"Miscellaneous:\n"
 		"  -k, --keep-open                    keep the connection open even if the sender\n"
@@ -116,11 +120,12 @@ int main(int argc, char** argv)
 		static struct option longopts[] = {
 			{"receiver",	no_argument,		NULL,	'R'},
 			{"sender",	no_argument,		NULL,	'S'},
-			{"sample-rate",	required_argument,	NULL,	's'},
-			{"frequencies",	required_argument,	NULL,	'f'},
-			{"window",	required_argument,	NULL,	'w'},
-			{"gap",		required_argument,	NULL,	'g'},
 			{"baud",	required_argument,	NULL,	'b'},
+			{"frequencies",	required_argument,	NULL,	'f'},
+			{"gap",		required_argument,	NULL,	'g'},
+			{"max-length",	required_argument,	NULL,	'l'},
+			{"sample-rate",	required_argument,	NULL,	's'},
+			{"window",	required_argument,	NULL,	'w'},
 			{"keep-open",	no_argument,		NULL,	'k'},
 			{"debug-level",	required_argument,	NULL,	'd'},
 			{"help",	no_argument,		NULL,	'h'},
@@ -131,7 +136,7 @@ int main(int argc, char** argv)
 		float freq;
 		int i;
 
-		opt = getopt_long(argc, argv, "RSb:f:s:w:g:kdh",
+		opt = getopt_long(argc, argv, "RSb:f:g:l:s:w:kdh",
 				  longopts, &longindex);
 		if (opt == -1)
 			break;
@@ -180,6 +185,27 @@ int main(int argc, char** argv)
 				usage(true);
 			}
 			break;
+		case 'g':
+			params.interpacket_gap_factor = strtof(optarg, &end);
+			if (*end != '\0')
+				usage(true);
+			if (params.interpacket_gap_factor < 1.f) {
+				fprintf(stderr, "%s: interpacket gap factor must be >=1\n",
+					progname);
+				usage(true);
+			}
+			break;
+		case 'l':
+			max_message_length = (size_t)strtoul(optarg, &end, 10);
+			if (*end != '\0')
+				usage(true);
+			if (max_message_length == 0 ||
+			    max_message_length > MAX_MESSAGE_LENGTH) {
+				fprintf(stderr, "%s: max message length must be non-zero and <=%zu\n",
+					progname, MAX_MESSAGE_LENGTH);
+				usage(true);
+			}
+			break;
 		case 's':
 			params.sample_rate = strtol(optarg, &end, 10);
 			if (*end != '\0')
@@ -196,16 +222,6 @@ int main(int argc, char** argv)
 				usage(true);
 			if (params.recv_window_factor <= 0.f) {
 				fprintf(stderr, "%s: receiver window factor must be positive\n",
-					progname);
-				usage(true);
-			}
-			break;
-		case 'g':
-			params.interpacket_gap_factor = strtof(optarg, &end);
-			if (*end != '\0')
-				usage(true);
-			if (params.interpacket_gap_factor < 1.f) {
-				fprintf(stderr, "%s: interpacket gap factor must be >=1\n",
 					progname);
 				usage(true);
 			}
